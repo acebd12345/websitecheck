@@ -1,0 +1,11 @@
+# 跨機器換行正規化：repo 內統一 LF，避免不同電腦 checkout 後 diff 噪音
+* text=auto eol=lf
+
+# Windows 批次檔必須用 CRLF 才能正常執行
+*.bat text eol=crlf
+
+# 二進位檔不要動
+*.xlsx binary
+*.pptx binary
+*.png binary
+*.jpg binary

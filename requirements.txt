@@ -1,0 +1,13 @@
+# monthly（網站每月檢核）+ daily（對外連結稽核）共用
+openpyxl>=3.1
+google-auth>=2.30
+gspread>=6.0
+requests>=2.31
+beautifulsoup4>=4.12
+
+# 選配：monthly 的 method=playwright 網站才需要（另需 playwright install chromium）
+# playwright>=1.40
+# 選配：monthly 的 ai_provider=anthropic（雲端 Claude 判讀）才需要
+# anthropic>=0.40
+# 選配：daily 在 Windows 用 Outlook 寄信才需要（Linux/Gmail SMTP 不需要）
+# pywin32>=306

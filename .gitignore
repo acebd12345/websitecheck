@@ -1,0 +1,38 @@
+# ===== 不可公開：機敏、個資、產出全部集中在 private/ =====
+private/
+
+# ===== 保險：即使誤放也擋下 =====
+ga-service-account.json
+service_account.json
+*-service-account.json
+config.json
+batch_config.ini
+sites.json
+nodes_map.json
+domains.txt
+使用說明.md
+reports/
+檢核表/
+logs/
+problems_*.csv
+links_*.jsonl
+*.xlsx
+*.xlsm
+*.csv
+*.zip
+*.pptx
+*.pdf
+
+# ===== 暫存 / 快取 =====
+__pycache__/
+*.pyc
+.claude/
+qa_slides/
+build/
+dist/
+*.spec
+*.html
+*.css
+
+# ===== 個人展示腳本（內含內部 email，不公開）=====
+Demo.bat

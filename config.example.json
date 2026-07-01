@@ -1,0 +1,23 @@
+{
+  "ai_provider": "openai",
+  "ai_base_url": "https://YOUR-LOCAL-AI-ENDPOINT/v1",
+  "ai_model": "/your_model_name",
+  "ai_api_key": "none",
+  "ga_key_file": "private/ga-service-account.json",
+  "master_sheet_id": "YOUR_GOOGLE_SHEET_ID",
+  "master_worksheet": "主設定表",
+  "link_audit_dir": "private",
+
+  "mail": { "method": "outlook", "cc": "", "subject": "網站對外連結稽核結果" },
+  "gmail": { "user": "you@gmail.com", "app_password": "YOUR_GMAIL_APP_PASSWORD" },
+  "scan": {
+    "max_pages": 8000,
+    "content_whitelist": "porkbun.com, gname.com",
+    "skip_hosts": "accessibility.moda.gov.tw"
+  },
+  "schedule": { "groups": 5, "log_keep_days": 3 },
+
+  "_說明_ai_provider": "openai / anthropic / gemini（見 README）",
+  "_說明_mail": "method=outlook(本機Windows) 或 gmail(Linux主機SMTP，填 gmail.app_password)",
+  "_說明_清單來源": "monthly 讀主試算表 master_worksheet；daily 讀 sync_config 從主設定表產生的 private/domains.txt"
+}
