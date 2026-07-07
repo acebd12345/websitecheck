@@ -22,10 +22,45 @@ from bs4 import BeautifulSoup
 requests.packages.urllib3.disable_warnings()
 
 TIMEOUT = 12
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaipeiLinkAudit/1.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaipeiLinkAudit/1.0",
+           # 缺 Accept 時部分政府 .aspx 站(如 wifi.taipei)會回 500,故明確帶上
+           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
+
+# ── 渲染由「內容抓取方式」驅動:只有 playwright 站才開,靜態站全程不渲染 ──
+# 呼叫端(batch_audit / link_audit_all)依該站方法在掃描前設定 ALLOW_RENDER。
+import threading
+ALLOW_RENDER = False        # 預設關;playwright 站才由呼叫端設 True
+_RENDER_CAP = 60            # 開啟時每站最多渲染幾頁空殼(避免整站 SPA 每頁都渲染)
+_render_lock = threading.Lock()
+_render_count = 0
+
+def _reset_render_budget():
+    global _render_count
+    with _render_lock:
+        _render_count = 0
+
+def _take_render_budget():
+    global _render_count
+    with _render_lock:
+        if _render_count < _RENDER_CAP:
+            _render_count += 1
+            return True
+        return False
 
 # 政府/教育網域視為低風險(仍檢查是否失效)
 TRUSTED_SUFFIXES = (".gov.tw", ".gov.taipei", ".taipei", ".edu.tw", ".org.tw", ".mil.tw")
+
+# 只有臺灣官方能註冊、民間永遠碰不到 → 不可能被搶註,略過內容掃描(仍驗存活)
+# 依 TWNIC 規章:gov.tw/mil.tw(數發部/國防部審核)、gov.taipei(北市府 ICANN 地理頂域)
+# 注意:.edu.tw(學校)、.org.tw(協會)、.tw/.taipei(泛用) 民間都能註冊,一律全檢,不列此
+GOV_EXCLUSIVE_SUFFIXES = (".gov.tw", ".mil.tw", ".gov.taipei", ".政府.tw", ".軍事.tw", ".xn--kpry57d")  # 末項為 .台灣 punycode 備用
+
+# 社群/分享/短網址:重導到不同網域是設計行為,非問題 → 只驗存活,不抓內容/不判重導
+SOCIAL_SKIP_HOSTS = ("line.me", "lin.ee", "line.naver.jp", "facebook.com", "fb.com", "fb.watch",
+    "twitter.com", "x.com", "instagram.com", "youtube.com", "youtu.be", "google.com", "goo.gl",
+    "forms.gle", "docs.google.com", "maps.app.goo.gl", "reurl.cc", "lihi.cc", "lihi1.cc", "lihi2.cc",
+    "lihi3.cc", "bit.ly", "pse.is", "tinyurl.com", "t.me", "threads.net", "linkedin.com")
 
 # 可疑內容關鍵字(賭博、色情、停放頁)
 SUSPICIOUS_KEYWORDS = [
@@ -39,19 +74,65 @@ SUSPICIOUS_KEYWORDS = [
 ]
 
 # 比對前先剔除的善意詞(避免「白色情人節」誤撞「色情」這類子字串誤判)
-BENIGN_PHRASES = ["白色情人節"]
+# 帶點的 TLD 商品名:域名註冊商首頁把 .casino/.poker/.bet 當商品賣,非賭博內容
+BENIGN_PHRASES = ["白色情人節", ".casino", ".poker", ".bet", ".slot", ".xxx", ".sexy", ".porn"]
 
 
 def _kw_pattern(kw):
-    """英文關鍵字要求整字比對(避免 specialise 撞到 cialis),中文做子字串比對"""
+    """英文關鍵字要求整字比對(避免 specialise 撞到 cialis),中文做子字串比對。
+    邊界字元類須含拉丁擴充(é ü 等),否則法文 spécialiste 的 é 非 ASCII、
+    ASCII-only 邊界會誤判成立而撞到 cialis(www.un.org/fr 實例)。"""
     if all(ord(c) < 128 for c in kw):
-        return re.compile(r"(?<![a-z0-9])" + re.escape(kw.lower()) + r"(?![a-z0-9])")
+        b = r"[a-z0-9À-ɏ]"
+        return re.compile(r"(?<!" + b + r")" + re.escape(kw.lower()) + r"(?!" + b + r")")
     return re.compile(re.escape(kw.lower()))
 
 
 KEYWORD_PATTERNS = [(kw, _kw_pattern(kw)) for kw in SUSPICIOUS_KEYWORDS]
 
+# 根路徑關鍵字快取(host -> 命中清單)。搶註者常只在根路徑放賭博/色情內容,
+# 深層路徑(如 /default.html)回 200 但內容乾淨,只掃被連到的那頁會漏
+# (實例:taitraesource.com/default.html 乾淨,/ 是 Dewa77 賭場)。
+_ROOT_KW_CACHE = {}
+
+
+def _root_keyword_hits(host):
+    """抓 host 根路徑掃可疑關鍵字,每 host 只抓一次(快取)。"""
+    if host in _ROOT_KW_CACHE:
+        return _ROOT_KW_CACHE[host]
+    hits = []
+    for scheme in ("https", "http"):
+        try:
+            rr = requests.get(f"{scheme}://{host}/", timeout=TIMEOUT, headers=HEADERS,
+                              verify=False, allow_redirects=True)
+            if "html" in rr.headers.get("Content-Type", ""):
+                soup = BeautifulSoup(rr.text[:200000], "html.parser")
+                t = soup.title.string.strip()[:80] if soup.title and soup.title.string else ""
+                body = (t + " " + soup.get_text(" ", strip=True)[:5000] + " " + rr.url).lower()
+                for ph in BENIGN_PHRASES:
+                    body = body.replace(ph.lower(), " ")
+                hits = [kw for kw, pat in KEYWORD_PATTERNS if pat.search(body)]
+            break
+        except Exception:
+            continue
+    _ROOT_KW_CACHE[host] = hits
+    return hits
+
 RISK_ORDER = {"SUSPICIOUS": 0, "DEAD": 1, "BROKEN": 2, "REDIRECTED": 3, "WARN": 4, "OK": 5}
+
+# 分頁/清單參數:含這些的內部 URL 視為分頁,不再往下挖(避免月曆/分頁製造無限內部頁)
+PAGINATION_PARAMS = {"page", "pagesize", "offset", "limit", "start", "count", "p", "pn",
+                     "pageindex", "pageno", "cid", "date", "month", "year", "yy", "mm"}
+# crawl_internal 每次執行後,把「實際爬幾頁 / 是否因上限截斷」寫到這(呼叫端讀取)
+LAST_CRAWL = {"pages": 0, "capped": False}
+
+
+def _is_pagination_url(url):
+    try:
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        return any(k.lower() in PAGINATION_PARAMS for k in q)
+    except Exception:
+        return False
 
 CSV_COLS = ["risk", "url", "host", "trusted_gov", "dns", "status",
             "final_host_changed", "final_url", "title", "note",
@@ -71,13 +152,28 @@ def is_trusted(host):
 
 
 def fetch_page(sess, page):
+    """抓一頁:靜態優先,判為 JS 空殼且未超渲染額度時升級 Playwright。
+    回傳 (最終網址, html) 或 None。(整併:讓 JS 站也爬得到內部連結)"""
     try:
         r = sess.get(page, timeout=TIMEOUT, verify=False)
         if "html" not in r.headers.get("Content-Type", ""):
             return None
-        return r
+        html, final_url = r.text, r.url
     except Exception:
         return None
+    # 只有 playwright 站(ALLOW_RENDER=True)才做空殼偵測+渲染;靜態站全程靜態
+    if ALLOW_RENDER:
+        try:
+            from engine.fetch_layered import detect_shell, render_to_html
+            text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+            need, _ = detect_shell(html, text)
+            if need and _take_render_budget():
+                rhtml, _note = render_to_html(page)
+                if rhtml:
+                    html = rhtml
+        except Exception:
+            pass  # engine 不可用(如獨立 exe)→ 退回純靜態
+    return final_url, html
 
 
 def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
@@ -92,6 +188,7 @@ def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
     sess.mount("https://", adapter)
     sess.mount("http://", adapter)
     pages_done = 0
+    _reset_render_budget()  # 每站重置渲染額度
     links_log = open(links_log_path, "w", encoding="utf-8")
 
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -99,17 +196,18 @@ def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
             batch = frontier[: min(40, max_pages - pages_done)]
             frontier = frontier[len(batch):]
             next_frontier = []
-            for r in ex.map(lambda p: fetch_page(sess, p), batch):
-                if r is None:
+            for res in ex.map(lambda p: fetch_page(sess, p), batch):
+                if res is None:
                     continue
+                final_url, html = res
                 pages_done += 1
-                soup = BeautifulSoup(r.text, "html.parser")
+                soup = BeautifulSoup(html, "html.parser")
                 page_title = ""
                 if soup.title and soup.title.string:
                     page_title = soup.title.string.strip()[:80]
                 for a in soup.find_all("a", href=True):
                     href = a["href"].strip()
-                    absu = urllib.parse.urljoin(r.url, href)
+                    absu = urllib.parse.urljoin(final_url, href)
                     absu = urllib.parse.urldefrag(absu)[0]
                     # 只檢查 http/https,排除 opay:// jkos:// mailto: 等 App 協議
                     if not absu.lower().startswith(("http://", "https://")):
@@ -118,15 +216,15 @@ def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
                     if not host:
                         continue
                     if host == start_host:
-                        if absu not in seen_pages:
+                        if absu not in seen_pages and not _is_pagination_url(absu):
                             seen_pages.add(absu)
                             next_frontier.append(absu)
                     else:
-                        occ = {"found_on": r.url, "page_title": page_title,
+                        occ = {"found_on": final_url, "page_title": page_title,
                                "anchor": a.get_text(strip=True)[:50]}
                         occs = external.setdefault(absu, [])
                         # 同一頁同一連結只記一次,每個連結最多記 50 個出現位置
-                        if len(occs) < 50 and not any(o["found_on"] == r.url for o in occs):
+                        if len(occs) < 50 and not any(o["found_on"] == final_url for o in occs):
                             occs.append(occ)
                             links_log.write(json.dumps(
                                 {"url": absu, **occ}, ensure_ascii=False) + "\n")
@@ -135,6 +233,8 @@ def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
             print(f"  已爬 {pages_done} 頁,佇列 {len(frontier)},外部連結 {len(external)} 筆")
 
     links_log.close()
+    LAST_CRAWL["pages"] = pages_done
+    LAST_CRAWL["capped"] = bool(frontier)   # 還有佇列=撞上限截斷;空=全站爬完
     print(f"爬取完成:共 {pages_done} 頁,收集到 {len(external)} 筆外部連結"
           + (f"(佇列仍剩 {len(frontier)} 頁未爬)" if frontier else "(全站爬完)"))
     return external
@@ -164,12 +264,42 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     try:
         socket.getaddrinfo(host, None)
         result["dns"] = "OK"
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError, OSError):
+        # UnicodeError:畸形主機名(空/超長標籤)IDNA 編碼失敗,一條壞連結不能炸掉整站稽核
         result["dns"] = "FAIL"
         result["risk"] = "DEAD"
-        result["note"] = "DNS 解析失敗(網域可能已釋出,留意被搶註風險)"
+        # gov 專屬域民間註冊不到,DNS 失敗只可能是子網域下線/內網限定(split-horizon),不是被搶註
+        if host.endswith(GOV_EXCLUSIVE_SUFFIXES):
+            result["note"] = "DNS 解析失敗(政府專屬網域無搶註可能;多為服務下線或僅內網可解)"
+        else:
+            result["note"] = "DNS 解析失敗(網域可能已釋出,留意被搶註風險)"
         return result
-    # 2. HTTP 請求
+    # 1.5 政府專屬域 / 社群短網址 / 白名單:只驗存活,跳過內容抓取與關鍵字掃描
+    #     (政府專屬域民間註冊不到→不可能被搶註;社群短網址重導為設計行為;白名單已人工確認無虞)
+    gov_excl = host.endswith(GOV_EXCLUSIVE_SUFFIXES)
+    social = any(host == s or host.endswith("." + s) for s in SOCIAL_SKIP_HOSTS)
+    wl = any(host == w or host.endswith("." + w) for w in content_whitelist)
+    if gov_excl or social or wl:
+        try:
+            rr = requests.head(url, timeout=TIMEOUT, headers=HEADERS, verify=False, allow_redirects=True)
+            code = rr.status_code
+            if code >= 400:  # 很多政府/CMS 伺服器不支援 HEAD(www.gov.taipei HEAD=404 但 GET=200)
+                rr = requests.get(url, timeout=TIMEOUT, headers=HEADERS, verify=False,
+                                  allow_redirects=True, stream=True)  # GET 再確認,stream 不讀 body
+                code = rr.status_code; rr.close()
+            result["status"] = str(code)
+            if code >= 400:
+                result["risk"] = "BROKEN"; result["note"] = f"HTTP {code}"
+            else:
+                result["note"] = ("政府專屬網域(民間不可註冊、不可能被搶註),僅驗存活" if gov_excl
+                                  else "白名單(已確認內容無虞),僅驗存活" if wl
+                                  else "社群/短網址(重導為設計行為),僅驗存活")
+        except requests.exceptions.SSLError:
+            result["risk"] = "WARN"; result["note"] = "SSL 憑證錯誤"
+        except Exception as e:
+            result["risk"] = "DEAD"; result["note"] = f"連線失敗: {type(e).__name__}"
+        return result
+    # 2. HTTP 請求(其餘一律全檢:抓內容+掃搶註/賭博/色情關鍵字)
     try:
         r = requests.get(url, timeout=TIMEOUT, headers=HEADERS, verify=False, allow_redirects=True)
         result["status"] = str(r.status_code)
@@ -191,6 +321,16 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
             body_lower = body_lower.replace(ph.lower(), " ")
         hits = [] if whitelisted else [
             kw for kw, pat in KEYWORD_PATTERNS if pat.search(body_lower)]
+        if not hits and not whitelisted:
+            # 深層路徑乾淨仍要驗根路徑:搶註者常只在首頁放賭博/色情
+            pu = urllib.parse.urlparse(r.url or url)
+            if pu.path not in ("", "/") or pu.query:
+                rhits = _root_keyword_hits(final_host or host)
+                if rhits:
+                    result["risk"] = "SUSPICIOUS"
+                    result["note"] = ("根路徑命中可疑關鍵字: " + ", ".join(rhits[:5])
+                                      + "(被連頁面正常,疑網域已遭搶註)")
+                    return result
         if hits:
             result["risk"] = "SUSPICIOUS"
             result["note"] = "命中可疑關鍵字: " + ", ".join(hits[:5])
@@ -219,8 +359,20 @@ def audit_site(start_url, max_pages=5000, links_log_path="external_links.jsonl",
     with ThreadPoolExecutor(max_workers=10) as ex:
         futs = [ex.submit(check_external, u, o, content_whitelist, skip_hosts)
                 for u, o in external.items()]
+        urls = list(external.keys())
         for n, fut in enumerate(futs, 1):
-            results.append(fut.result())
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                # 單條連結檢測炸掉不可毀整站:記為 DEAD 續行
+                u = urls[n - 1]
+                results.append({"url": u, "host": norm_host(u), "occurrences": len(external[u]),
+                                "found_on": external[u][0]["found_on"],
+                                "found_on_title": external[u][0]["page_title"],
+                                "anchor": external[u][0]["anchor"], "all_locations": "",
+                                "trusted_gov": "N", "dns": "", "status": "", "final_url": "",
+                                "final_host_changed": "", "title": "",
+                                "risk": "DEAD", "note": f"檢測例外: {type(e).__name__}"})
             if n % 100 == 0:
                 print(f"  已檢測 {n}/{len(external)}")
     results.sort(key=lambda r: (RISK_ORDER.get(r["risk"], 9), r["host"]))

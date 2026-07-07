@@ -16,6 +16,7 @@ reports/
 logs/
 problems_*.csv
 links_*.jsonl
+external_links.jsonl
 *.xlsx
 *.xlsm
 *.csv
