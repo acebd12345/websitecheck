@@ -79,7 +79,9 @@ Cloud Scheduler (cron, 每天一次)
 
 ### Step 7 — 公開前資安複掃（若 repo 要 public）
 ```
-git ls-files -z | xargs -0 grep -InE "<internal-ai-host>|@gov\.taipei|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20}|-----BEGIN"
+# 內部 AI 主機名全稱不寫在本文件；從 private/config.json 取值後再掃，避免把它寫進公開檔
+AIHOST=$(python -c "import json;print(json.load(open('private/config.json'))['ai_base_url'].split('//')[1].split('/')[0])")
+git ls-files -z | xargs -0 grep -InE "$AIHOST|@gov\.taipei|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20}|-----BEGIN"
 git ls-files private/        # 必須為空
 ```
 
