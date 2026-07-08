@@ -17,8 +17,10 @@ import sys
 import urllib.parse
 import urllib.request
 
-sys.path.insert(0, r"D:\websitecheck")          # for config
-sys.path.insert(0, r"D:\websitecheck\monthly")  # for webcheck_ai
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)                          # for config
+sys.path.insert(0, os.path.join(_ROOT, "monthly"))  # for webcheck_ai
 import webcheck_ai
 
 _CTX_NOVERIFY = ssl.create_default_context()

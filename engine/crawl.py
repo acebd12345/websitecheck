@@ -21,8 +21,10 @@ import urllib.parse
 import urllib.request
 from collections import deque
 
-sys.path.insert(0, r"D:\websitecheck")
-sys.path.insert(0, r"D:\websitecheck\monthly")
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "monthly"))
 
 from bs4 import BeautifulSoup
 from engine.fetch_layered import fetch_layered

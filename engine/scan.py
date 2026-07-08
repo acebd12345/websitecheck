@@ -20,8 +20,10 @@ import re
 import sys
 import urllib.parse
 
-sys.path.insert(0, r"D:\websitecheck")
-sys.path.insert(0, r"D:\websitecheck\monthly")
+import os
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "monthly"))
 
 from engine.fetch_layered import fetch_layered
 from engine import dates as dates_mod
@@ -30,7 +32,7 @@ from bs4 import BeautifulSoup
 
 TODAY = datetime.date.today()
 ONEYR = TODAY - datetime.timedelta(days=365)
-CSV_DEFAULT = r"D:\websitecheck\private\TCGweb_466站對照清單_v2.csv"
+CSV_DEFAULT = os.path.join(_ROOT, "private", "TCGweb_466站對照清單_v2.csv")
 GENERIC_DATE = re.compile(r"(20\d{2})[/.\-年](\d{1,2})[/.\-月](\d{1,2})|(1[01]\d)[/.\-年](\d{1,2})[/.\-月](\d{1,2})")
 
 AI_QUESTION = "這個網頁首頁是否有最新消息/公告區塊?若有,請列出最近三筆的標題與日期;若無或看不出來,請說明。"

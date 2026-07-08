@@ -24,8 +24,9 @@
 |---|---|---|
 | 架構全貌 | `docs/ARCHITECTURE.md` | 先讀 |
 | 掃描設定分頁設計 | `docs/cloud/scan-settings-tab.md` | 上雲設定來源（Sheet 新分頁）內容 |
-| 30 天排程 | `docs/cloud/monthly-schedule.md` | 每天掃哪些站、頁數、估時 |
-| 失效網站清單 | `docs/cloud/dead-sites.md` | 13 站疑似廢站（只列不刪） |
+| 30 天排程 | `private/cloud/monthly-schedule.md`（**未進版控**：含逐站清單，屬營運敏感資料，不放公開 repo） | 每天掃哪些站、頁數、估時 |
+| 失效網站清單 | `private/cloud/dead-sites.md`（**未進版控**：同上，含失效政府網域） | 13 站疑似廢站（只列不刪） |
+| 停更站清單 | `private/cloud/stale-5months.md`、`private/cloud/stale-nodate-recheck.md`（**未進版控**） | 超過5個月未更新/無日期站 |
 | 資安/機敏指引 | `docs/SECURITY_CLOUD.md` | 哪些不可公開、怎麼注入 |
 | Sheet 待寫入 grid（json） | scratchpad（`settings_grid.json`/`schedule_grid.json`/`dead_grid.json`） | 承辦核准後寫入 Sheet 的實際內容 |
 
@@ -70,7 +71,7 @@ Cloud Scheduler (cron, 每天一次)
 - 每個巨站日單站 ~9000 頁、估 ~55 分鐘（實測外推）。若雲端單次執行時間受限：
   - 方案 A：巨站日仍一次跑完（時間夠就最省事）。
   - 方案 B：拆時段 — 需給爬蟲加 **path-scope** 能力（目前 `crawl_internal` 只認 host），例如孔廟按 `/zh-tw/C/`、`/zh-tw/L/` 分段，分兩個時段各爬一半。此為**新功能**，需實作＋測試。
-- **孔廟併爬**：中/英/日/韓 4 版同 host `www.tctcc.taipei`，一次爬即涵蓋全語言 → daily 深掃只跑中文那筆即可，另 3 筆標「隨中文帶掃」，省 ~27,000 次重複抓取（見 monthly-schedule.md 註記）。
+- **孔廟併爬**：中/英/日/韓 4 版同 host `www.tctcc.taipei`，一次爬即涵蓋全語言 → daily 深掃只跑中文那筆即可，另 3 筆標「隨中文帶掃」，省 ~27,000 次重複抓取（見 `private/cloud/monthly-schedule.md` 註記）。
 
 ### Step 6 — 產出與回填
 - reports/ 寫私有 bucket；`summary.json`/`CONFIRMED_hijacks.csv` 為關鍵輸出。

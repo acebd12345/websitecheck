@@ -37,3 +37,9 @@ dist/
 
 # ===== 個人展示腳本（內含內部 email，不公開）=====
 Demo.bat
+
+# ===== 逐站營運資料（失效/停更/排程含站台清單，屬敏感，只放 private/）=====
+docs/cloud/dead-sites.md
+docs/cloud/stale-5months.md
+docs/cloud/stale-nodate-recheck.md
+docs/cloud/monthly-schedule.md

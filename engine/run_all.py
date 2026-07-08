@@ -23,8 +23,9 @@ import os
 import sys
 from collections import Counter
 
-sys.path.insert(0, r"D:\websitecheck")
-sys.path.insert(0, r"D:\websitecheck\monthly")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "monthly"))
 
 from engine.scan import load_sites, health_profile, compliance_profile, CSV_DEFAULT
 from engine.fetch_layered import fetch_layered

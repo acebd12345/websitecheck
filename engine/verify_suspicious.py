@@ -13,7 +13,8 @@
 """
 import csv, glob, os, re, ssl, sys, socket, urllib.parse, urllib.request
 
-sys.path.insert(0, r"D:\websitecheck"); sys.path.insert(0, r"D:\websitecheck\monthly")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT); sys.path.insert(0, os.path.join(_ROOT, "monthly"))
 import webcheck_ai
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
@@ -46,7 +47,7 @@ def main():
     if len(sys.argv) > 1:
         path = sys.argv[1]
     else:
-        d = sorted(glob.glob(r"D:\websitecheck\private\reports\linkaudit_all_*"), key=os.path.getmtime)[-1]
+        d = sorted(glob.glob(os.path.join(_ROOT, "private", "reports", "linkaudit_all_*")), key=os.path.getmtime)[-1]
         path = os.path.join(d, "all_problems.csv")
     rows = list(csv.DictReader(open(path, encoding="utf-8-sig")))
     susp = {}
