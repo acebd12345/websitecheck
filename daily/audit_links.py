@@ -28,7 +28,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaipeiLinkAu
            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
 
 # ── 渲染由「內容抓取方式」驅動:只有 playwright 站才開,靜態站全程不渲染 ──
-# 呼叫端(batch_audit / link_audit_all)依該站方法在掃描前設定 ALLOW_RENDER。
+# 呼叫端(batch_audit / full_overnight)依該站方法在掃描前設定 ALLOW_RENDER。
 import threading
 ALLOW_RENDER = False        # 預設關;playwright 站才由呼叫端設 True
 _RENDER_CAP = 60            # 開啟時每站最多渲染幾頁空殼(避免整站 SPA 每頁都渲染)
