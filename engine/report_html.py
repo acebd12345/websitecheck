@@ -364,8 +364,13 @@ def _locations_html(all_locations_str):
     return f'<div class="occ"><ul>{items}{extra}</ul></div>'
 
 
-def generate_site_report(site_url, site_info, verified, out_dir):
-    """產生單站報告 HTML，回傳輸出路徑。"""
+def generate_site_report(site_url, site_info, verified, out_dir, used_names=None):
+    """產生單站報告 HTML，回傳輸出路徑。
+
+    Args:
+        used_names: 本輪已用名稱集合 {(org_dir_name, fname)}，用於同輪重名偵測。
+                    傳 None 時不做重名偵測（同站重產直接覆蓋）。
+    """
     name = site_info.get("name", "")
     org = site_info.get("org", "") or "其他"
     stamp = site_info.get("stamp")
@@ -452,15 +457,18 @@ def generate_site_report(site_url, site_info, verified, out_dir):
     org_dir = os.path.join(out_dir, org_dir_name)
     os.makedirs(org_dir, exist_ok=True)
     fname = _sanitize_filename(name) + ".html"
-    # 重名偵測
+    # 重名偵測：只看本輪記憶體集合，同站重跑直接覆蓋舊檔
+    if used_names is not None:
+        key = (org_dir_name, fname)
+        if key in used_names:
+            base = _sanitize_filename(name)
+            for suffix in range(2, 100):
+                fname = f"{base}_{suffix}.html"
+                key = (org_dir_name, fname)
+                if key not in used_names:
+                    break
+        used_names.add(key)
     fpath = os.path.join(org_dir, fname)
-    if os.path.exists(fpath):
-        base = _sanitize_filename(name)
-        for suffix in range(2, 100):
-            fname = f"{base}_{suffix}.html"
-            fpath = os.path.join(org_dir, fname)
-            if not os.path.exists(fpath):
-                break
     with open(fpath, "w", encoding="utf-8") as f:
         f.write(html)
     return fpath
@@ -771,12 +779,13 @@ def generate_for_sites(site_urls, sites_data=None, verified=None):
         if verified is None:
             verified = _load_all_verified()
     out_dir = REPORTS_HTML_DIR
+    used_names = set()
     paths = []
     for url in site_urls:
         info = sites_data.get(url)
         if not info:
             continue
-        p = generate_site_report(url, info, verified, out_dir)
+        p = generate_site_report(url, info, verified, out_dir, used_names)
         paths.append(p)
     return paths
 
@@ -821,10 +830,11 @@ def main():
                         if s.get("org", "") == args.org}
 
     # 單站報告
+    used_names = set()
     if not args.city:
         print(f"\n[report_html] 產生單站報告: {len(target_sites)} 站...", flush=True)
         for url, info in target_sites.items():
-            p = generate_site_report(url, info, verified, out_dir)
+            p = generate_site_report(url, info, verified, out_dir, used_names)
             generated.append(p)
             name = info.get("name", "")[:20]
             print(f"  ✓ {name}", flush=True)
