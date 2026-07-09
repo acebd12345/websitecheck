@@ -24,6 +24,11 @@
 | `skip_hosts` | accessibility.moda.gov.tw, pcc.gov.tw, web.pcc.gov.tw, cr… | csv-host | 免檢名單:完全略過(有防爬蟲、人工確認正常) |
 | `skip_methods` | manual,疑似失效 | csv | 這些抓取方式的站不掃描 |
 | `skip_hosts_hard` | 3d.taipei | csv-host | 硬跳過的 host(3D應用) |
+| `suspicious_keywords` | 娛樂城,百家樂,博弈,博彩,賭場,老虎機,捕魚機,六合彩,casino,baccarat,slot,betting,poker,jackpot,色情,成人影片,成人視訊,情色,約砲,av女優,無碼,porn,hentai,xvideo,live sex,escort,виагра,viagra,cialis | csv | 賭博/色情內容詞;第一關整字邊界比對圈候選+第三關定性 |
+| `parked_keywords` | domain is for sale,buy this domain,此網域可供出售,域名出售,parked domain,sedoparking,godaddy.com/domainsearch | csv | 停放/出售頁詞;只給第一關 |
+| `characterize_extra_keywords` | sex,dewa,judi,gacor,situs | csv | 第三關定性補充(品牌片段只適合裸搜) |
+| `benign_phrases` | 白色情人節,.casino,.poker,.bet,.slot,.xxx,.sexy,.porn | csv | 比對前剔除的善意詞(防子字串誤判) |
+| `pagination_params` | page,pagesize,offset,limit,start,count,p,pn,pageindex,pageno,cid,date,month,year,yy,mm | csv | URL帶這些參數視為分頁不往下挖(月曆陷阱) |
 
 （`content_whitelist` / `skip_hosts` 完整值見 config.json，上雲時原樣搬進此格。）
 

@@ -25,6 +25,7 @@ import os
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "monthly"))
+import scan_settings
 
 from bs4 import BeautifulSoup
 from engine.fetch_layered import fetch_layered
@@ -36,7 +37,9 @@ _UA = {"User-Agent": webcheck_ai.UA, "Accept": "text/html,*/*;q=0.8", "Accept-La
 SKIP_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z",
             ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico",
             ".mp4", ".avi", ".mov", ".wmv", ".mp3", ".wav", ".txt", ".csv", ".json", ".xml"}
-PAGINATION_PARAMS = {"page", "pagesize", "offset", "limit", "start", "count", "p", "pn"}
+# 單一來源(scan_settings):16 參數完整版,含月曆類(date/month/year),
+# 之前這裡只有 8 個、缺月曆參數 → 健康剖面爬蟲會掉進月曆無限頁陷阱
+PAGINATION_PARAMS = {p.lower() for p in scan_settings.get("pagination_params")}
 SITEMAP_KW = ("sitemap", "網站導覽", "網頁導覽", "webmap")
 
 

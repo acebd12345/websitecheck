@@ -21,6 +21,12 @@ import html
 import datetime
 import configparser
 
+# 詞庫快取須在 import audit_links「之前」更新:audit_links 於載入時就編好關鍵字樣板,
+# 同行程事後 refresh 不會回頭改它。Sheet 讀失敗會沿用快取/內建預設,不中斷排程。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import scan_settings
+print(scan_settings.refresh()[1], flush=True)
+
 from audit_links import audit_site, norm_host, CSV_COLS, RISK_ORDER
 import config  # 共用設定(專案根目錄, 由執行器設 PYTHONPATH)
 

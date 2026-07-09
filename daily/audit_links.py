@@ -12,6 +12,7 @@ import re
 import sys
 import csv
 import json
+import os
 import socket
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,9 @@ import requests
 from bs4 import BeautifulSoup
 
 requests.packages.urllib3.disable_warnings()
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import scan_settings  # 詞庫/分頁參數單一來源(Sheet掃描設定→快取→內建預設)
 
 TIMEOUT = 12
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaipeiLinkAudit/1.0",
@@ -62,20 +66,13 @@ SOCIAL_SKIP_HOSTS = ("line.me", "lin.ee", "line.naver.jp", "facebook.com", "fb.c
     "forms.gle", "docs.google.com", "maps.app.goo.gl", "reurl.cc", "lihi.cc", "lihi1.cc", "lihi2.cc",
     "lihi3.cc", "bit.ly", "pse.is", "tinyurl.com", "t.me", "threads.net", "linkedin.com")
 
-# 可疑內容關鍵字(賭博、色情、停放頁)
-SUSPICIOUS_KEYWORDS = [
-    "娛樂城", "百家樂", "博弈", "博彩", "賭場", "老虎機", "捕魚機", "六合彩",
-    "casino", "baccarat", "slot", "betting", "poker", "jackpot",
-    "色情", "成人影片", "成人視訊", "情色", "約砲", "av女優", "無碼",
-    "porn", "hentai", "xvideo", "live sex", "escort",
-    "виагра", "viagra", "cialis",
-    "domain is for sale", "buy this domain", "此網域可供出售", "域名出售",
-    "parked domain", "sedoparking", "godaddy.com/domainsearch",
-]
+# 可疑內容關鍵字(賭博、色情 + 停放頁):單一來源見 scan_settings(Sheet 可調)
+SUSPICIOUS_KEYWORDS = (scan_settings.get("suspicious_keywords")
+                       + scan_settings.get("parked_keywords"))
 
 # 比對前先剔除的善意詞(避免「白色情人節」誤撞「色情」這類子字串誤判)
 # 帶點的 TLD 商品名:域名註冊商首頁把 .casino/.poker/.bet 當商品賣,非賭博內容
-BENIGN_PHRASES = ["白色情人節", ".casino", ".poker", ".bet", ".slot", ".xxx", ".sexy", ".porn"]
+BENIGN_PHRASES = scan_settings.get("benign_phrases")
 
 
 def _kw_pattern(kw):
@@ -121,8 +118,7 @@ def _root_keyword_hits(host):
 RISK_ORDER = {"SUSPICIOUS": 0, "DEAD": 1, "BROKEN": 2, "REDIRECTED": 3, "WARN": 4, "OK": 5}
 
 # 分頁/清單參數:含這些的內部 URL 視為分頁,不再往下挖(避免月曆/分頁製造無限內部頁)
-PAGINATION_PARAMS = {"page", "pagesize", "offset", "limit", "start", "count", "p", "pn",
-                     "pageindex", "pageno", "cid", "date", "month", "year", "yy", "mm"}
+PAGINATION_PARAMS = {p.lower() for p in scan_settings.get("pagination_params")}
 # crawl_internal 每次執行後,把「實際爬幾頁 / 是否因上限截斷」寫到這(呼叫端讀取)
 LAST_CRAWL = {"pages": 0, "capped": False}
 

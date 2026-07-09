@@ -70,7 +70,7 @@
 2. **停更盤點補完**：24 個「需渲染」站要開 playwright 才拿得到真實更新日；47 個靜態補判站需渲染版覆驗。
 3. **清單資料修正**（承辦決策後）：4 假失效站改網址、9 真失效站是否除役、英文版停更通報各局處。
 4. **巨站拆時段**（可選新功能）：`crawl_internal` 目前只認 host，若要按路徑分段掃巨站需加 path-scope 能力。
-5. **消除重複**（技術債）：`SUSPICIOUS_KEYWORDS` vs `BAD_KW` 兩份關鍵字清單、多條 HTML→text 路徑，見 ARCHITECTURE §6。
+5. ~~**消除重複**（技術債）~~：**已完成**（2026-07，由 TECHDEBT_HANDOFF.md 規格執行：`scan_settings.py` 單一來源化詞庫/分頁參數、`verify_suspicious.py` 移除改 `--verify` 旗標）。多條 HTML→text 路徑仍保留（語意不同）。
 
 ---
 

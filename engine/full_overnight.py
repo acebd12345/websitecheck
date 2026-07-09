@@ -18,6 +18,7 @@ import concurrent.futures as cf
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT); sys.path.insert(0, os.path.join(_ROOT, "daily")); sys.path.insert(0, os.path.join(_ROOT, "monthly"))
 import config
+import scan_settings
 from audit_links import norm_host, CSV_COLS
 from engine import page_budget
 
@@ -31,8 +32,16 @@ HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
 
-BAD_KW = ["casino","poker","slot","betting","娛樂城","百家樂","博弈","賭場","escort","porn",
-          "sex","dewa","judi","gacor","situs","博彩","老虎機","av女優","成人影片"]
+# 定性用詞庫(裸搜計數,只跑在 AI 已判 A/B 的頁上):單一來源見 scan_settings。
+# 藥物詞(viagra/cialis)只適合整字比對,裸搜會撞 specialist 類字 → 排除;
+# 品牌片段(dewa/judi/gacor)反之只適合裸搜 → 由 characterize_extra 補入。
+_AMBIG_SUBSTR = {"viagra", "cialis", "виагра"}
+
+def _build_bad_kw():
+    return ([k for k in scan_settings.get("suspicious_keywords") if k not in _AMBIG_SUBSTR]
+            + scan_settings.get("characterize_extra_keywords"))
+
+BAD_KW = _build_bad_kw()
 
 
 # ── 階段1 worker(獨立行程)──
@@ -109,12 +118,12 @@ def characterize(url, html):
     hidden_bad = []
     for h in hidden:
         for kw in BAD_KW:
-            if re.search(kw, h, re.I):
+            if re.search(re.escape(kw), h, re.I):
                 doms = sorted(set(re.findall(r'href="https?://([^/"]+)', h)))
                 hidden_bad += doms
                 break
-    vis_hits = [kw for kw in BAD_KW if len(re.findall(kw, vis, re.I)) >= 2]
-    title_bad = any(re.search(kw, title, re.I) for kw in BAD_KW + ["dewa","gaming"])
+    vis_hits = [kw for kw in BAD_KW if len(re.findall(re.escape(kw), vis, re.I)) >= 2]
+    title_bad = any(re.search(re.escape(kw), title, re.I) for kw in BAD_KW + ["gaming"])
     if hidden_bad:
         return "隱藏掛馬", f"原始碼 display:none 藏 {len(set(hidden_bad))} 個外部網域(如 {', '.join(sorted(set(hidden_bad))[:5])}),畫面看不到"
     if title_bad and vis_hits:
@@ -157,9 +166,21 @@ def main():
     ap.add_argument("--org", default="", help="只掃指定局處(如 資訊局),測試/分局處跑用")
     ap.add_argument("--only", default="", help="只掃名稱/網址含指定字串的站(逗號分隔),定點重測用")
     ap.add_argument("--resume", default="", help="續跑:指定既有 full_overnight_* 目錄,跳過已完成站")
+    ap.add_argument("--verify", default="", help="複查:不重爬,對既有報告目錄的 all_problems.csv 重跑階段2-4(取代舊 verify_suspicious)")
     args = ap.parse_args()
+    if args.verify and args.resume:
+        sys.exit("--verify 與 --resume 不可同時使用")
 
-    if args.resume:
+    # 詞庫/分頁參數:Sheet「掃描設定」→本機快取;失敗沿用快取/內建預設,不中斷
+    global BAD_KW
+    _, ss_msg = scan_settings.refresh()
+    BAD_KW = _build_bad_kw()   # refresh 後重建(模組載入時建的可能是舊快取)
+    print(ss_msg, flush=True)
+
+    if args.verify:
+        outdir = args.verify if os.path.isabs(args.verify) else os.path.join(OUT_DIR, "reports", args.verify)
+        stamp = os.path.basename(outdir).replace("full_overnight_", "")
+    elif args.resume:
         outdir = args.resume if os.path.isabs(args.resume) else os.path.join(OUT_DIR, "reports", args.resume)
         stamp = os.path.basename(outdir).replace("full_overnight_", "")
     else:
@@ -169,89 +190,99 @@ def main():
     combined = os.path.join(outdir, "all_problems.csv")
     progress = os.path.join(outdir, "progress.json")
 
-    # 續跑:載入已完成站的 URL
-    done_urls = set()      # 已處理過的所有 URL(ok/skip)→ 續跑時跳過
-    prior_prog = []
-    if args.resume and os.path.exists(progress):
-        prior_prog = json.load(open(progress, encoding="utf-8"))
-        done_urls = {p.get("url") for p in prior_prog if not str(p.get("status","")).startswith("fail")}
-        n_ok = sum(1 for p in prior_prog if p.get("status") == "ok")
-        print(f"[續跑] 先前已完成 {n_ok} 站(含跳過共 {len(done_urls)}),將跳過續跑\n", flush=True)
+    if args.verify:
+        if not os.path.exists(combined):
+            sys.exit(f"--verify 找不到 {combined}")
+        t0 = time.time()
+        prog = json.load(open(progress, encoding="utf-8")) if os.path.exists(progress) else []
+        skipped = [p for p in prog if p.get("status") not in ("ok",)
+                   and not str(p.get("status", "")).startswith("fail")]
+        print(f"===== 複查模式 {stamp}:跳過階段1,對既有 all_problems.csv 重跑階段2-4 =====\n", flush=True)
 
-    scan = config._cfg.get("scan", {})
-    whitelist = tuple(w.strip().lower() for w in str(scan.get("content_whitelist","")).split(",") if w.strip())
-    skip_hosts = tuple(w.strip().lower() for w in str(scan.get("skip_hosts","")).split(",") if w.strip())
+    if not args.verify:
+        # 續跑:載入已完成站的 URL
+        done_urls = set()      # 已處理過的所有 URL(ok/skip)→ 續跑時跳過
+        prior_prog = []
+        if args.resume and os.path.exists(progress):
+            prior_prog = json.load(open(progress, encoding="utf-8"))
+            done_urls = {p.get("url") for p in prior_prog if not str(p.get("status","")).startswith("fail")}
+            n_ok = sum(1 for p in prior_prog if p.get("status") == "ok")
+            print(f"[續跑] 先前已完成 {n_ok} 站(含跳過共 {len(done_urls)}),將跳過續跑\n", flush=True)
 
-    rows = list(csv.DictReader(open(CSV_LIST, encoding="utf-8-sig")))
-    allsites = [(r.get("網站名稱","").strip(), r.get("網址","").strip(), r.get("局處","").strip(),
-                 r.get("內容抓取方式","").strip()) for r in rows if r.get("網址","").strip()]
-    if args.org: allsites = [s for s in allsites if s[2] == args.org]
-    if args.only:
-        toks = [t.strip().lower() for t in args.only.split(",") if t.strip()]
-        allsites = [s for s in allsites if any(t in s[0].lower() or t in s[1].lower() for t in toks)]
-    if args.limit: allsites = allsites[:args.limit]
-    # 讀 Sheet「頁數」欄:已知站首掃上限=記錄值+100;新站用 --max-pages(1000)。撞牆再加碼。
-    try:
-        reg = page_budget.read_sheet()
-    except Exception as e:
-        print(f"[警告] 讀 Sheet 頁數欄失敗({type(e).__name__}),全用首掃上限 {args.max_pages}", flush=True)
-        reg = {}
-    new_pages = {}
-    n_known = 0
-    tasks, skipped = [], []
-    for name,url,org,method in allsites:
-        if url in done_urls:
-            continue  # 續跑:已完成,跳過
-        if method in SKIP_METHODS or norm_host(url) in SKIP_HOSTS:
-            skipped.append({"name":name,"url":url,"org":org,"status":method or "skip","n_problems":0})
-        else:
-            first_cap = page_budget.get_cap(reg, url, first_default=args.max_pages)
-            if url in reg: n_known += 1
-            tasks.append((name,url,org,method,first_cap,outdir,whitelist,skip_hosts))
-    n_pw = sum(1 for t in tasks if t[3]=="playwright")
-    t0 = time.time()
-    print(f"===== 全網站深度稽核 {stamp} =====", flush=True)
-    print(f"待掃 {len(tasks)}(playwright {n_pw} 會渲染)、跳過 {len(skipped)} | {args.workers} 行程", flush=True)
-    print(f"已知 {n_known} 站(首掃=Sheet記錄+{page_budget.BUFFER})、新站首掃 {args.max_pages};撞牆→+2000→每次+3000 直到爬完(上限 {CEIL})", flush=True)
-    print(f"白名單 {len(whitelist)} / skip {len(skip_hosts)} | 產出 {outdir}\n", flush=True)
+        scan = config._cfg.get("scan", {})
+        whitelist = tuple(w.strip().lower() for w in str(scan.get("content_whitelist","")).split(",") if w.strip())
+        skip_hosts = tuple(w.strip().lower() for w in str(scan.get("skip_hosts","")).split(",") if w.strip())
 
-    # ── 階段1 ──
-    resuming = bool(args.resume) and os.path.exists(combined)
-    cfp = open(combined, "a" if resuming else "w", newline="", encoding="utf-8-sig")
-    cw = csv.DictWriter(cfp, fieldnames=["site_name","org"]+CSV_COLS, extrasaction="ignore")
-    if not resuming:
-        cw.writeheader(); cfp.flush()
-    prog = list(prior_prog) + list(skipped); done = 0   # 保留先前進度
-    try:
-        ex = cf.ProcessPoolExecutor(max_workers=args.workers, max_tasks_per_child=1)  # 每站全新行程,釋放記憶體
-    except TypeError:
-        ex = cf.ProcessPoolExecutor(max_workers=args.workers)  # 舊版無 max_tasks_per_child
-    with ex:
-        futs = {ex.submit(audit_one, t): t for t in tasks}
-        for fut in cf.as_completed(futs):
-            try: r = fut.result()
-            except Exception as e:
-                r = {"name":"?","url":"?","org":"","status":f"fail:{type(e).__name__}","problems":[],"n_problems":0,"links":0,"suspicious":0,"dead":0}
-            for p in r["problems"]:
-                cw.writerow({"site_name":r["name"],"org":r["org"],**p})
-            cfp.flush()
-            prog.append({k:v for k,v in r.items() if k!="problems"})
-            json.dump(prog, open(progress,"w",encoding="utf-8"), ensure_ascii=False)
-            if r.get("status") == "ok":
-                new_pages[r["url"]] = r.get("pages", 0)   # 本次真實頁數,結束寫回 Sheet
-            done += 1
-            rounds = r.get("rounds", 0)
-            mark = f"(加碼{rounds}次→{r.get('final_cap')})" if rounds else ""
-            if r.get("capped"): mark += "⚠仍撞上限"
-            print(f"[階段1 {done}/{len(tasks)}] {r['name'][:16]:18} {r.get('pages',0)}頁{mark} 連結{r['links']} 異常{r['n_problems']}(搶註{r['suspicious']} 死{r['dead']}) [{r['status']}] {time.time()-t0:.0f}s", flush=True)
-    cfp.close()
-    # 把本次真實頁數寫回 Sheet「頁數」欄(URL 對鍵,只在變大時更新 → 記錄各站最大值)
-    try:
-        chg = page_budget.write_sheet(new_pages)
-        print(f"\n頁數已寫回 Sheet:本次 {len(new_pages)} 站,更新記錄 {chg} 站", flush=True)
-    except Exception as e:
-        print(f"\n[警告] 頁數寫回 Sheet 失敗({type(e).__name__});頁數仍存於 progress.json", flush=True)
-    print(f"\n階段1 完成 {time.time()-t0:.0f}s\n", flush=True)
+        rows = list(csv.DictReader(open(CSV_LIST, encoding="utf-8-sig")))
+        allsites = [(r.get("網站名稱","").strip(), r.get("網址","").strip(), r.get("局處","").strip(),
+                     r.get("內容抓取方式","").strip()) for r in rows if r.get("網址","").strip()]
+        if args.org: allsites = [s for s in allsites if s[2] == args.org]
+        if args.only:
+            toks = [t.strip().lower() for t in args.only.split(",") if t.strip()]
+            allsites = [s for s in allsites if any(t in s[0].lower() or t in s[1].lower() for t in toks)]
+        if args.limit: allsites = allsites[:args.limit]
+        # 讀 Sheet「頁數」欄:已知站首掃上限=記錄值+100;新站用 --max-pages(1000)。撞牆再加碼。
+        try:
+            reg = page_budget.read_sheet()
+        except Exception as e:
+            print(f"[警告] 讀 Sheet 頁數欄失敗({type(e).__name__}),全用首掃上限 {args.max_pages}", flush=True)
+            reg = {}
+        new_pages = {}
+        n_known = 0
+        tasks, skipped = [], []
+        for name,url,org,method in allsites:
+            if url in done_urls:
+                continue  # 續跑:已完成,跳過
+            if method in SKIP_METHODS or norm_host(url) in SKIP_HOSTS:
+                skipped.append({"name":name,"url":url,"org":org,"status":method or "skip","n_problems":0})
+            else:
+                first_cap = page_budget.get_cap(reg, url, first_default=args.max_pages)
+                if url in reg: n_known += 1
+                tasks.append((name,url,org,method,first_cap,outdir,whitelist,skip_hosts))
+        n_pw = sum(1 for t in tasks if t[3]=="playwright")
+        t0 = time.time()
+        print(f"===== 全網站深度稽核 {stamp} =====", flush=True)
+        print(f"待掃 {len(tasks)}(playwright {n_pw} 會渲染)、跳過 {len(skipped)} | {args.workers} 行程", flush=True)
+        print(f"已知 {n_known} 站(首掃=Sheet記錄+{page_budget.BUFFER})、新站首掃 {args.max_pages};撞牆→+2000→每次+3000 直到爬完(上限 {CEIL})", flush=True)
+        print(f"白名單 {len(whitelist)} / skip {len(skip_hosts)} | 產出 {outdir}\n", flush=True)
+
+        # ── 階段1 ──
+        resuming = bool(args.resume) and os.path.exists(combined)
+        cfp = open(combined, "a" if resuming else "w", newline="", encoding="utf-8-sig")
+        cw = csv.DictWriter(cfp, fieldnames=["site_name","org"]+CSV_COLS, extrasaction="ignore")
+        if not resuming:
+            cw.writeheader(); cfp.flush()
+        prog = list(prior_prog) + list(skipped); done = 0   # 保留先前進度
+        try:
+            ex = cf.ProcessPoolExecutor(max_workers=args.workers, max_tasks_per_child=1)  # 每站全新行程,釋放記憶體
+        except TypeError:
+            ex = cf.ProcessPoolExecutor(max_workers=args.workers)  # 舊版無 max_tasks_per_child
+        with ex:
+            futs = {ex.submit(audit_one, t): t for t in tasks}
+            for fut in cf.as_completed(futs):
+                try: r = fut.result()
+                except Exception as e:
+                    r = {"name":"?","url":"?","org":"","status":f"fail:{type(e).__name__}","problems":[],"n_problems":0,"links":0,"suspicious":0,"dead":0}
+                for p in r["problems"]:
+                    cw.writerow({"site_name":r["name"],"org":r["org"],**p})
+                cfp.flush()
+                prog.append({k:v for k,v in r.items() if k!="problems"})
+                json.dump(prog, open(progress,"w",encoding="utf-8"), ensure_ascii=False)
+                if r.get("status") == "ok":
+                    new_pages[r["url"]] = r.get("pages", 0)   # 本次真實頁數,結束寫回 Sheet
+                done += 1
+                rounds = r.get("rounds", 0)
+                mark = f"(加碼{rounds}次→{r.get('final_cap')})" if rounds else ""
+                if r.get("capped"): mark += "⚠仍撞上限"
+                print(f"[階段1 {done}/{len(tasks)}] {r['name'][:16]:18} {r.get('pages',0)}頁{mark} 連結{r['links']} 異常{r['n_problems']}(搶註{r['suspicious']} 死{r['dead']}) [{r['status']}] {time.time()-t0:.0f}s", flush=True)
+        cfp.close()
+        # 把本次真實頁數寫回 Sheet「頁數」欄(URL 對鍵,只在變大時更新 → 記錄各站最大值)
+        try:
+            chg = page_budget.write_sheet(new_pages)
+            print(f"\n頁數已寫回 Sheet:本次 {len(new_pages)} 站,更新記錄 {chg} 站", flush=True)
+        except Exception as e:
+            print(f"\n[警告] 頁數寫回 Sheet 失敗({type(e).__name__});頁數仍存於 progress.json", flush=True)
+        print(f"\n階段1 完成 {time.time()-t0:.0f}s\n", flush=True)
 
     # ── 階段2 + 3 ──
     allp = list(csv.DictReader(open(combined, encoding="utf-8-sig")))
@@ -284,7 +315,7 @@ def main():
     confirmed = [v for v in verified if v["ai_verdict"]=="A" or (v["ai_verdict"]=="B" and v["type"] not in ("停放/失效","待人工"))]
     from collections import Counter
     ok=[p for p in prog if p.get("status")=="ok"]
-    summary={"stamp":stamp,"sites_scanned":len(ok),"skipped":len(skipped),
+    summary={"stamp":stamp,"mode":"verify" if args.verify else "full","sites_scanned":len(ok),"skipped":len(skipped),
              "total_anomalies":len(allp),
              "by_risk":dict(Counter(r["risk"] for r in allp)),
              "suspicious_checked":len(susp),

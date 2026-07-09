@@ -58,6 +58,7 @@ pip install -r requirements.txt
 ```
 web_check/
 ├─ config.py / config.example.json      共用設定
+├─ scan_settings.py                     掃描設定單一來源(Sheet→快取→內建預設;詞庫/分頁參數)
 ├─ 每月檢核.bat / 每日稽核.bat            兩個一鍵入口
 ├─ monthly/   每月檢核程式
 ├─ daily/     對外連結稽核程式（audit_links 引擎 + run_daily.sh/.bat）
