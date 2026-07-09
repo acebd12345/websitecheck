@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | **monthly** 每月檢核 | `monthly/` | 每月（本機） | HTTPS/RWD/連結/站內深度爬檢、GA流量、AI內容判讀 | 檢核表 Excel + 報告 |
 | **daily** 對外連結稽核 | `daily/` | 每日（主機 cron） | 全站爬取，查連結失效/網域被搶註/賭博色情 | 逐站寄信 + CSV |
-| **engine** 統一引擎 | `engine/` | 手動 / 整夜 | 靜態優先抓取地基，長出健康剖面、合規剖面、**全 466 站四階段深度稽核** | reports/ 下 summary/CONFIRMED_hijacks 等 |
+| **engine** 統一引擎 | `engine/` | 手動 / 整夜 | 靜態優先抓取地基，長出健康剖面、合規剖面、**全 466 站四階段深度稽核**、**HTML 報告產生** | reports/ 下 summary/CONFIRMED_hijacks + reports_html/ 單站報告＋全市總報告 |
 
 三者共用：一份 `config.json`、一個 GA 服務帳戶金鑰、同一張 Google 試算表——唯一手動維護的是「主設定表」分頁。monthly 直接讀它；daily 讀的是 `sync_config` 從主設定表產生的 `private/domains.txt`；engine 讀 `TCGweb466站清單` 分頁（含每站「頁數」欄，掃完自動回填）。
 
@@ -18,6 +18,7 @@
 - **對外連結稽核**：雙擊 `每日稽核.bat`（本機測試），或主機 cron 跑 `daily/run_daily.sh`
 - **全站深度稽核**（找搶註/掛馬）：`python -m engine.full_overnight --workers 6`
   - 只掃某局處：`--org 教育局`；定點重測：`--only <關鍵字>`；中斷續跑：`--resume <報告目錄>`
+- **HTML 報告產生**（單站+全市，吃 AI 複查降級）：`python -m engine.report_html --zip`
 - **站況體檢**（更新時效/停更）：`python -m engine.scan --profile health --sheet`
 
 ## 安裝

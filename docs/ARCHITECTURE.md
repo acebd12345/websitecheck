@@ -81,7 +81,7 @@ websitecheck/
 │   └─ 排程部署說明.txt
 │
 ├─ engine/   ── 統一引擎(整併地基) ───────────────────────────
-│   (詳見 §3.1，共 10 檔)
+│   (詳見 §3.1，共 11 檔)
 │
 └─ private/  ── 機敏/個資/產出，整個 gitignore ─────────────
     ├─ config.json / ga-service-account.json
@@ -90,7 +90,7 @@ websitecheck/
     └─ reports/…                     各式報告(full_overnight_* / linkaudit_all_* / engine_run_*)
 ```
 
-### 3.1 engine/ 那 10 個檔
+### 3.1 engine/ 那 11 個檔
 
 分成三層：**地基（抓取）→ 中層（爬取/清單）→ 上層（驅動/剖面/報告）**。
 
@@ -104,6 +104,7 @@ websitecheck/
 | **`scan.py`** | 上層 | 雙剖面驅動：`health_profile`(最新消息日期/停更判定/抓取方式) + `compliance_profile`(14 站送地端 AI 判「首頁有無最新消息區塊」)。`load_sites` 支援 Sheet 或 CSV |
 | **`run_all.py`** | 上層 | 日常執行殼：一次跑 健康剖面(全站) → 合規剖面(14站 AI) → 選擇性深爬(`--deep`/`--deep-stale`)，產綜合摘要 |
 | **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核**(整夜無人值守)。見 §4。這是目前 daily 稽核的「重裝版」主力 |
+| **`report_html.py`** | 上層 | HTML 報告產生器：把掃描產出轉成單站報告(按局處歸資料夾)＋全市總報告。吃 AI 複查判定(C→附錄、A/B→置頂)。`full_overnight` 收尾自動呼叫，也可獨立跑 `python -m engine.report_html` |
 | ~~`verify_suspicious.py`~~ | — | **已移除**（2026-07，功能由 `full_overnight --verify` 取代；舊檔有兩個已漂移 bug：抓取失敗直接判 B、預設 glob 對不到新報告） |
 
 ---
@@ -256,6 +257,11 @@ python -m engine.full_overnight --only taitraesource --workers 3
 python -m engine.full_overnight --org 教育局 --resume full_overnight_20260707_1659 --workers 6
 # 複查模式:不重爬,對既有報告重跑階段2-4(取代舊 verify_suspicious)
 python -m engine.full_overnight --verify <報告目錄>
+
+# HTML 報告產生(單站+全市,吃AI複查降級)
+python -m engine.report_html                      # 全部:所有站+全市總報告
+python -m engine.report_html --org 教育局          # 只產某局處
+python -m engine.report_html --city --zip          # 只產全市總報告+壓zip
 
 # engine 雙剖面體檢
 python -m engine.scan --profile health --sheet
