@@ -27,6 +27,21 @@ def _ws():
     return gc.open_by_key(config.MASTER_SHEET_ID).worksheet(SHEET_TAB)
 
 
+def refresh_csv(path):
+    """Sheet「TCGweb466站清單」整張導出 → 原子性覆寫本機快照 CSV。
+    讓 Sheet 維持唯一事實來源:改站清單/網址/抓取方式只改 Sheet,掃描前自動下載。
+    內容異常(空表/缺網址欄)時丟例外、不覆寫,由呼叫端決定沿用舊快照。回傳資料列數。"""
+    import csv, os
+    vals = _ws().get_all_values()
+    if not vals or "網址" not in vals[0]:
+        raise ValueError("分頁內容異常(空表或無「網址」欄),不覆寫快照")
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        csv.writer(f).writerows(vals)
+    os.replace(tmp, path)
+    return len(vals) - 1
+
+
 def read_sheet():
     """讀 Sheet「頁數」欄 → {url: pages_int}。沒有該欄則回空。"""
     ws = _ws()

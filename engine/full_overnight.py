@@ -178,6 +178,15 @@ def main():
     BAD_KW = _build_bad_kw()   # refresh 後重建(模組載入時建的可能是舊快取)
     print(ss_msg, flush=True)
 
+    # 站清單快照:Sheet「TCGweb466站清單」→ 本機CSV。唯一事實來源在 Sheet,
+    # 改站清單/網址/抓取方式只改 Sheet,這裡每次執行前自動下載;失敗沿用舊快照。
+    if not args.verify:
+        try:
+            n = page_budget.refresh_csv(CSV_LIST)
+            print(f"站清單快照:已從 Sheet 更新({n} 站)", flush=True)
+        except Exception as e:
+            print(f"[警告] 站清單快照更新失敗({type(e).__name__}),沿用既有快照", flush=True)
+
     if args.verify:
         outdir = args.verify if os.path.isabs(args.verify) else os.path.join(OUT_DIR, "reports", args.verify)
         stamp = os.path.basename(outdir).replace("full_overnight_", "")

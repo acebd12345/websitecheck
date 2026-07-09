@@ -43,7 +43,9 @@
   `web_check14站`（是否納入合規 AI 判讀）、`頁數`（每站上次爬到幾頁，見 §5 加碼爬頁）。
 - `monthly/sync_config.py` 從主設定表產出兩個下游檔：`private/sites.json`（monthly 用）、
   `private/domains.txt`（daily 寄信用）。
-- 離線 / 大量掃描時改讀本機快照 `private/TCGweb_466站對照清單_v2.csv`（466 站）。
+- 大量掃描讀本機快照 `private/TCGweb_466站對照清單_v2.csv`（466 站）——**`full_overnight` 每次執行前
+  自動從 Sheet「TCGweb466站清單」分頁重新下載**（`page_budget.refresh_csv`，失敗沿用舊快照）。
+  改站清單/網址/抓取方式**只改 Sheet 即可**，快照只是快取（與詞庫 `scan_settings` 同一模式）。
 
 ---
 
