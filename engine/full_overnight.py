@@ -12,7 +12,7 @@
 用法: python -m engine.full_overnight --max-pages 8000 --workers 6
       python -m engine.full_overnight --max-pages 20 --workers 3 --limit 4   (煙霧測試)
 """
-import argparse, csv, datetime, glob, json, os, re, socket, ssl, sys, time, urllib.parse, urllib.request
+import argparse, csv, datetime, json, os, re, socket, ssl, sys, time, urllib.parse, urllib.request
 import concurrent.futures as cf
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -167,6 +167,7 @@ def main():
     ap.add_argument("--only", default="", help="只掃名稱/網址含指定字串的站(逗號分隔),定點重測用")
     ap.add_argument("--resume", default="", help="續跑:指定既有 full_overnight_* 目錄,跳過已完成站")
     ap.add_argument("--verify", default="", help="複查:不重爬,對既有報告目錄的 all_problems.csv 重跑階段2-4(取代舊 verify_suspicious)")
+    ap.add_argument("--no-report", action="store_true", help="跳過收尾的 HTML 報告產生")
     args = ap.parse_args()
     if args.verify and args.resume:
         sys.exit("--verify 與 --resume 不可同時使用")
@@ -333,6 +334,18 @@ def main():
     print(json.dumps(summary, ensure_ascii=False, indent=1), flush=True)
     print(f"\n真搶註/掛馬(AI判A):{summary['confirmed_hijacks']} 筆 → CONFIRMED_hijacks.csv", flush=True)
     print(f"全部產出:{outdir}", flush=True)
+
+    # ── HTML 報告產生（本次 status=ok 的站）──
+    if not args.no_report:
+        try:
+            from engine.report_html import generate_for_sites
+            ok_urls = [p["url"] for p in prog if p.get("status") == "ok" and p.get("url")]
+            if ok_urls:
+                print(f"\n[報告] 自動產生 {len(ok_urls)} 站的單站 HTML 報告...", flush=True)
+                paths = generate_for_sites(ok_urls)
+                print(f"[報告] 完成, 產出 {len(paths)} 份 → private/reports_html/", flush=True)
+        except Exception as e:
+            print(f"\n[警告] HTML 報告產生失敗({type(e).__name__}: {e}), 不影響掃描結果", flush=True)
 
 
 if __name__ == "__main__":

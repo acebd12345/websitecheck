@@ -18,7 +18,6 @@ import csv as csvmod
 import datetime
 import re
 import sys
-import urllib.parse
 
 import os
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

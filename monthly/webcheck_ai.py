@@ -18,7 +18,6 @@
   支援所有 OpenAI 相容 API (Ollama / LM Studio / vLLM / Open WebUI ...)
 """
 import json
-import os
 import re
 import ssl
 import sys

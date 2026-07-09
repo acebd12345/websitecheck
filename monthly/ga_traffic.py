@@ -16,7 +16,6 @@ GA4 流量撈取工具 (檢核表「網站流量數」= 瀏覽網頁數 = GA4 sc
 import calendar
 import datetime
 import json
-import os
 import sys
 
 from google.oauth2 import service_account

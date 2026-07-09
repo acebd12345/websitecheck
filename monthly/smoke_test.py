@@ -29,7 +29,7 @@ for pkg in ["openpyxl", "gspread", "requests", "bs4", "google.auth"]:
         check(f"套件 {pkg}", False, "請執行 pip install -r requirements.txt")
 
 # 2. 本專案模組
-for mod in ["config", "webcheck_ai", "ga_traffic", "sync_config",
+for mod in ["config", "scan_settings", "webcheck_ai", "ga_traffic", "sync_config",
             "monthly_check", "update_excel", "node_check", "deep_check", "probe_method"]:
     try:
         importlib.import_module(mod)

@@ -4,9 +4,7 @@
 爬取目標網站站內頁面,收集所有對外連結,檢查:
   1. 連結失效 (DNS 解析失敗 / 連線錯誤 / 4xx 5xx)
   2. 網域疑似被註冊走 (重導向到無關網域、停放頁、賭博/色情關鍵字)
-用法: python audit_links.py [起始網址] [最大爬取頁數]
-     無參數執行時進入互動模式(供 exe 雙擊使用)
-     批次掃描多網站請用 batch_audit.py
+純引擎模組(無獨立 CLI):批次寄信走 batch_audit.py,全站深掃走 engine/full_overnight.py。
 """
 import re
 import sys
@@ -172,8 +170,11 @@ def fetch_page(sess, page):
     return final_url, html
 
 
-def crawl_internal(start_url, max_pages, links_log_path="external_links.jsonl"):
+def crawl_internal(start_url, max_pages, links_log_path=None):
     """BFS 爬站內頁面(多執行緒),回傳 {外部連結: [出現位置, ...]}"""
+    if not links_log_path:  # 預設落在 private/,別把產出噴在程式目錄(cwd)
+        import config
+        links_log_path = os.path.join(config.PRIVATE_DIR, "external_links.jsonl")
     start_host = norm_host(start_url)
     seen_pages = {start_url}
     external = {}
@@ -345,7 +346,7 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     return result
 
 
-def audit_site(start_url, max_pages=5000, links_log_path="external_links.jsonl",
+def audit_site(start_url, max_pages=5000, links_log_path=None,
                content_whitelist=(), skip_hosts=()):
     """稽核單一網站,回傳排序後的結果 list(供批次腳本呼叫)"""
     print(f"開始稽核: {start_url} (最多爬 {max_pages} 頁)")
@@ -375,58 +376,5 @@ def audit_site(start_url, max_pages=5000, links_log_path="external_links.jsonl",
     return results
 
 
-def write_csv(results, out_path):
-    with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_COLS)
-        w.writeheader()
-        w.writerows(results)
-
-
-def print_summary(results):
-    print("\n===== 稽核結果統計 =====")
-    for k in ["SUSPICIOUS", "DEAD", "BROKEN", "REDIRECTED", "WARN", "OK"]:
-        c = sum(1 for r in results if r["risk"] == k)
-        if c:
-            print(f"  {k}: {c}")
-    problems = [r for r in results if r["risk"] != "OK"]
-    if problems:
-        print("\n----- 需注意項目 -----")
-        for r in problems:
-            print(f"[{r['risk']}] {r['url']}")
-            print(f"    {r['note']}")
-            print(f"    出現位置({r['occurrences']} 處):")
-            for line in r["all_locations"].splitlines():
-                print(f"      - {line}")
-
-
-def main():
-    interactive = len(sys.argv) < 2
-    if interactive:
-        print("=" * 50)
-        print(" 網站對外連結稽核工具")
-        print(" 檢查失效連結、網域被搶註、導向賭博色情等情形")
-        print("=" * 50)
-        _u = input("請輸入要稽核的網站網址 (直接按 Enter = https://service.taipei/): ").strip()
-        start_url = _u if _u else "https://service.taipei/"
-        if not start_url.startswith("http"):
-            start_url = "https://" + start_url
-        max_pages = 5000
-    else:
-        start_url = sys.argv[1]
-        max_pages = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
-
-    try:
-        results = audit_site(start_url, max_pages)
-        out = f"link_audit_report_{norm_host(start_url).replace('.', '_')}.csv"
-        write_csv(results, out)
-        print_summary(results)
-        print(f"\n報告已輸出: {out}")
-    except Exception:
-        import traceback
-        traceback.print_exc()
-    if interactive:
-        input("\n執行完畢,按 Enter 關閉視窗...")
-
-
-if __name__ == "__main__":
-    main()
+# 互動模式/單站 CLI 已移除(2026-07):此檔為純引擎模組,
+# 入口一律走 batch_audit.py(每日寄信)或 engine/full_overnight.py(深掃)。
