@@ -1,0 +1,53 @@
+name: CI
+
+# 品質關卡:機敏掃描 + 全檔編譯 + 無金鑰環境模組載入(驗 fallback)。
+# 掃描/寄信/AI 一律不在 CI 跑——那些屬於主機端(見 deploy/hermes_update.sh)。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 機敏掃描(tracked 檔禁含信箱/金鑰;private/ 不得被追蹤)
+        run: |
+          if git ls-files private/ | grep -q .; then
+            echo "::error::private/ 有檔案被追蹤進 git"; exit 1
+          fi
+          PATTERNS='[A-Za-z0-9._%+-]+@gov\.taipei|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY'
+          if git ls-files -z | xargs -0 grep -InE "$PATTERNS"; then
+            echo "::error::掃到疑似機敏內容(信箱/雲端金鑰/私鑰),請移到 private/ 或環境變數"; exit 1
+          fi
+          echo "機敏掃描通過"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝依賴
+        run: pip install -r requirements.txt
+
+      - name: 全檔編譯
+        run: python -m compileall -q config.py scan_settings.py daily engine monthly
+
+      - name: 模組載入(無金鑰環境,同時驗 config/詞庫 fallback)
+        run: |
+          python - <<'EOF'
+          import sys; sys.path[:0] = [".", "daily", "monthly"]
+          import config
+          import scan_settings
+          # 詞庫絕不允許為空:無 Sheet/無快取時必須退回內建預設
+          for k in scan_settings.DEFAULTS:
+              assert scan_settings.get(k), f"詞庫 {k} 為空"
+          import audit_links
+          assert audit_links.SUSPICIOUS_KEYWORDS and audit_links.KEYWORD_PATTERNS
+          assert len(audit_links.PAGINATION_PARAMS) >= 8
+          import batch_audit  # 模組層會 refresh():無金鑰時應優雅降級不炸
+          from engine import crawl, scan, dates, fetch_layered, page_budget, full_overnight, report_html
+          import webcheck_ai, monthly_check, deep_check, sync_config, update_excel, node_check, ga_traffic, probe_method
+          print("全模組載入 OK(fallback 設定)")
+          EOF
