@@ -3,9 +3,10 @@ chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
 set "ROOT=%~dp0"
 set "PYTHONPATH=%ROOT%"
-cd /d "%ROOT%daily"
+cd /d "%ROOT%"
 echo ============================================
-echo  External link audit (daily / link_audit)
+echo  Full overnight deep scan + mail
+echo  (daily/batch_audit retired, use engine)
 echo ============================================
-python batch_audit.py %*
+python -m engine.full_overnight --mail %*
 pause

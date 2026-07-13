@@ -5,19 +5,19 @@
 | 子系統 | 資料夾 | 頻率 | 做什麼 | 產出 |
 |---|---|---|---|---|
 | **monthly** 每月檢核 | `monthly/` | 每月（本機） | HTTPS/RWD/連結/站內深度爬檢、GA流量、AI內容判讀 | 檢核表 Excel + 報告 |
-| **daily** 對外連結稽核 | `daily/` | 每日（主機 cron） | 全站爬取，查連結失效/網域被搶註/賭博色情 | 逐站寄信 + CSV |
-| **engine** 統一引擎 | `engine/` | 手動 / 整夜 | 靜態優先抓取地基，長出健康剖面、合規剖面、**全 466 站四階段深度稽核**、**HTML 報告產生** | reports/ 下 summary/CONFIRMED_hijacks + reports_html/ 單站報告＋全市總報告 |
+| ~~daily~~ | `daily/` | **已退役** | 掃描引擎 `audit_links.py` 保留；寄信併入 engine | — |
+| **engine** 統一引擎 | `engine/` | 手動 / 整夜 / 排程 | 靜態優先抓取地基 + 全 466 站四階段深度稽核 + **按局處寄信（AI 複查後）** + HTML 報告 | reports/ + Email |
 
-三者共用：一份 `config.json`、一個 GA 服務帳戶金鑰、同一張 Google 試算表。唯一手動維護的母表是 **「府內網站表」**（466 站，`config.SITE_LIST_WS`）；monthly 讀「府內網站表 篩 `合規檢核=是`」的子集、daily 讀 `sync_config` 產的 `private/domains.txt`、engine 讀府內網站表（含每站「頁數」欄自動回填、`局處Email` XLOOKUP 對照欄）。詞庫/分頁參數在「掃描設定」分頁、寄信收件在「局處聯絡人員表」。原「主設定表」已併入府內網站表退役。
+兩者共用：一份 `config.json`、一個 GA 服務帳戶金鑰、同一張 Google 試算表。唯一手動維護的母表是 **「府內網站表」**（466 站，`config.SITE_LIST_WS`）；monthly 讀「府內網站表 篩 `合規檢核=是`」的子集、engine 讀府內網站表（含每站「頁數」欄自動回填、`局處Email` XLOOKUP 對照欄）。詞庫/分頁參數在「掃描設定」分頁、寄信收件在「局處聯絡人員表」。
 
 > 完整架構、資料流、設計決策與技術債見 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
 
 ## 一鍵 / 常用執行
 
 - **每月檢核**：雙擊 `每月檢核.bat`（同步設定 → 檢測 → 產檢核表 → AI判讀）
-- **對外連結稽核**：雙擊 `每日稽核.bat`（本機測試），或主機 cron 跑 `daily/run_daily.sh`
-- **全站深度稽核**（找搶註/掛馬）：`python -m engine.full_overnight --workers 6`
+- **全站深度稽核+寄信**（找搶註/掛馬）：`python -m engine.full_overnight --workers 6 --mail`
   - 只掃某局處：`--org 教育局`；定點重測：`--only <關鍵字>`；中斷續跑：`--resume <報告目錄>`
+  - 對既有報告補寄：`python -m engine.mailer <報告目錄> [--dry-run]`
 - **HTML 報告產生**（單站+全市，吃 AI 複查降級）：`python -m engine.report_html --zip`
 - **站況體檢**（更新時效/停更）：`python -m engine.scan --profile health --sheet`
 
@@ -47,12 +47,11 @@ pip install -r requirements.txt
 | `anthropic` | 官方 Claude SDK | `claude-opus-4-8` / `claude-haiku-4-5` | `anthropic` |
 | `gemini` | Gemini OpenAI 相容端點 | `gemini-2.5-flash` | 無 |
 
-### daily 寄信
+### 寄信（engine/mailer.py，深掃後按局處寄）
 
-- `method: outlook`：本機 Windows + Outlook（測試期）
+- `method: outlook`：本機 Windows + Outlook
 - `method: gmail`：Linux 主機 SMTP，需在 `gmail.app_password` 填 Google 應用程式密碼
-- 主機排程：`crontab -e` 加 `0 3 * * * /path/web_check/daily/run_daily.sh`
-- 詳見 `daily/排程部署說明.txt`
+- 深掃加 `--mail` 自動寄，`--mail-to` 指定收件人（預設讀 config `mail_override_to`）
 
 ## 資料夾結構
 
@@ -62,14 +61,14 @@ web_check/
 ├─ scan_settings.py                     掃描設定單一來源(Sheet→快取→內建預設;詞庫/分頁參數)
 ├─ 每月檢核.bat / 每日稽核.bat            兩個一鍵入口
 ├─ monthly/   每月檢核程式
-├─ daily/     對外連結稽核程式（audit_links 引擎 + run_daily.sh/.bat）
+├─ daily/     連結稽核引擎（audit_links.py 保留；寄信已移至 engine/mailer.py）
 ├─ engine/    統一引擎（full_overnight 四階段深掃、scan/run_all 雙剖面、fetch_layered 分層抓取…）
 ├─ docs/      架構與雲端化文件（見下）
 └─ private/   機敏、個資、產出（gitignore）
    ├─ config.json / ga-service-account.json
    ├─ domains.txt / sites.json / nodes_map.json / TCGweb_466站對照清單_v2.csv
    ├─ reports/ / 檢核表/ / logs/
-   └─ problems_*.csv / links_*.jsonl（daily 產出，monthly 會讀來併入報告）
+   └─ reports/full_overnight_*/ 各式報告(含 mail_*.csv 寄信附件)
 ```
 
 ## 文件（`docs/`）

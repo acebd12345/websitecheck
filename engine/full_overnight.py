@@ -168,6 +168,8 @@ def main():
     ap.add_argument("--resume", default="", help="續跑:指定既有 full_overnight_* 目錄,跳過已完成站")
     ap.add_argument("--verify", default="", help="複查:不重爬,對既有報告目錄的 all_problems.csv 重跑階段2-4(取代舊 verify_suspicious)")
     ap.add_argument("--no-report", action="store_true", help="跳過收尾的 HTML 報告產生")
+    ap.add_argument("--mail", action="store_true", help="階段4後按局處寄信(預設關)")
+    ap.add_argument("--mail-to", default=config.get("mail_override_to", ""), help="收件人 override(鐵律:預設讀 config mail_override_to)")
     args = ap.parse_args()
     if args.verify and args.resume:
         sys.exit("--verify 與 --resume 不可同時使用")
@@ -355,6 +357,16 @@ def main():
                 print(f"[報告] 完成, 產出 {len(paths)} 份 → private/reports_html/", flush=True)
         except Exception as e:
             print(f"\n[警告] HTML 報告產生失敗({type(e).__name__}: {e}), 不影響掃描結果", flush=True)
+
+    # ── 按局處寄信（需 --mail）──
+    if args.mail:
+        try:
+            from engine.mailer import run as mailer_run
+            print(f"\n[寄信] 按局處彙整寄信(收件人: {args.mail_to})...", flush=True)
+            sent, skipped, details = mailer_run(outdir, mail_to=args.mail_to)
+            print(f"[寄信] 完成: 寄出 {sent} 封, 跳過 {len(skipped)} 局處(零真問題)", flush=True)
+        except Exception as e:
+            print(f"\n[警告] 寄信失敗({type(e).__name__}: {e})", flush=True)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
   "master_worksheet": "主設定表",
   "link_audit_dir": "private",
 
+  "mail_override_to": "your-email@example.com",
   "mail": { "method": "outlook", "cc": "", "subject": "網站對外連結稽核結果" },
   "gmail": { "user": "you@gmail.com", "app_password": "YOUR_GMAIL_APP_PASSWORD" },
   "scan": {

@@ -4,7 +4,7 @@
 爬取目標網站站內頁面,收集所有對外連結,檢查:
   1. 連結失效 (DNS 解析失敗 / 連線錯誤 / 4xx 5xx)
   2. 網域疑似被註冊走 (重導向到無關網域、停放頁、賭博/色情關鍵字)
-純引擎模組(無獨立 CLI):批次寄信走 batch_audit.py,全站深掃走 engine/full_overnight.py。
+純引擎模組(無獨立 CLI):全站深掃走 engine/full_overnight.py。
 """
 import re
 import sys
@@ -30,7 +30,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaipeiLinkAu
            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
 
 # ── 渲染由「內容抓取方式」驅動:只有 playwright 站才開,靜態站全程不渲染 ──
-# 呼叫端(batch_audit / full_overnight)依該站方法在掃描前設定 ALLOW_RENDER。
+# 呼叫端(full_overnight)依該站方法在掃描前設定 ALLOW_RENDER。
 import threading
 ALLOW_RENDER = False        # 預設關;playwright 站才由呼叫端設 True
 _RENDER_CAP = 60            # 開啟時每站最多渲染幾頁空殼(避免整站 SPA 每頁都渲染)
@@ -377,4 +377,4 @@ def audit_site(start_url, max_pages=5000, links_log_path=None,
 
 
 # 互動模式/單站 CLI 已移除(2026-07):此檔為純引擎模組,
-# 入口一律走 batch_audit.py(每日寄信)或 engine/full_overnight.py(深掃)。
+# 入口一律走 engine/full_overnight.py(深掃+寄信)。

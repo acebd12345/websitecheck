@@ -6,7 +6,7 @@
   Sheet「掃描設定」分頁(承辦可調) → private/scan_settings_cache.json(快取) → DEFAULTS(內建)
 
 用法:
-  - 主流程(full_overnight / batch_audit)啟動時呼叫一次 refresh():
+  - 主流程(full_overnight)啟動時呼叫一次 refresh():
     讀 Sheet 成功 → 更新快取;失敗 → 沿用既有快取或內建預設(印警示,不中斷)。
   - 其他任何地方(含 ProcessPoolExecutor 子行程)只呼叫 get(key):
     讀快取檔,絕不打 Sheet API(466 個子行程各打一次會撞配額)。
