@@ -78,8 +78,6 @@ web_check/
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系統全貌、資料流、關鍵設計決策、技術債 |
 | [SECURITY_CLOUD.md](docs/SECURITY_CLOUD.md) | 資安清單／上雲機敏處理指引（哪些不可公開、怎麼注入） |
-| [HERMES_HANDOFF.md](docs/HERMES_HANDOFF.md) | 雲端化交接規格（給接手的 agent 照做） |
-| [cloud/](docs/cloud/) | 掃描設定分頁設計、30 天排程、失效清單、未更新清單等雲端化產出 |
 
 ## 授權
 
