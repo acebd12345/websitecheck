@@ -3,7 +3,7 @@
 
 把統一引擎的產出串成一次執行:
   1. 健康剖面(全 466 站,首頁層,靜態優先,快)     → 最新消息時效/死站/需渲染
-  2. 合規剖面(14 站,送地端 AI 判讀)               → 首頁最新消息區塊判讀
+  2. 合規剖面(合規檢核=是 的站,送地端 AI)          → 首頁最新消息區塊判讀
   3. 深層 BFS(選定站,全站爬取 + 外連稽核)         → 全站連結健康(可選,較久)
 產出全部落在 private/reports/<時間>/,並印綜合摘要。
 
@@ -11,7 +11,7 @@
 
 用法:
   python -m engine.run_all --sheet                      健康+合規(預設,不深爬)
-  python -m engine.run_all --sheet --deep 14站          深爬 14 站
+  python -m engine.run_all --sheet --deep               深爬合規檢核集
   python -m engine.run_all --sheet --deep-stale         深爬「健康剖面判停更」的站
   python -m engine.run_all --csv <path> --no-compliance 只跑健康(離線,不呼叫AI)
 """
@@ -87,7 +87,7 @@ def main():
     sites = load_sites(args.sheet, args.csv)
     sites14 = [s for s in sites if s["is14"]]
     print(f"=== 整併引擎執行 {stamp} ===")
-    print(f"清單來源: {'Google Sheet' if args.sheet else 'CSV'} | 全站 {len(sites)} | 合規 14 站集 {len(sites14)} URL")
+    print(f"清單來源: {'Google Sheet' if args.sheet else 'CSV'} | 全站 {len(sites)} | 合規檢核集 {len(sites14)} URL")
     print(f"產出目錄: {outdir}\n")
 
     summary = {"stamp": stamp, "total_sites": len(sites)}
@@ -102,7 +102,7 @@ def main():
 
     # 2. 合規剖面
     if not args.no_compliance:
-        print("[2/3] 合規剖面(14 站 → 地端 AI)...")
+        print("[2/3] 合規剖面(合規檢核集 → 地端 AI)...")
         t = time.time()
         comp, cstat = run_compliance(sites14)
         json.dump(comp, open(os.path.join(outdir, "compliance.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)

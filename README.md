@@ -8,7 +8,7 @@
 | **daily** 對外連結稽核 | `daily/` | 每日（主機 cron） | 全站爬取，查連結失效/網域被搶註/賭博色情 | 逐站寄信 + CSV |
 | **engine** 統一引擎 | `engine/` | 手動 / 整夜 | 靜態優先抓取地基，長出健康剖面、合規剖面、**全 466 站四階段深度稽核**、**HTML 報告產生** | reports/ 下 summary/CONFIRMED_hijacks + reports_html/ 單站報告＋全市總報告 |
 
-三者共用：一份 `config.json`、一個 GA 服務帳戶金鑰、同一張 Google 試算表——唯一手動維護的是「主設定表」分頁。monthly 直接讀它；daily 讀的是 `sync_config` 從主設定表產生的 `private/domains.txt`；engine 讀 `TCGweb466站清單` 分頁（含每站「頁數」欄，掃完自動回填）。
+三者共用：一份 `config.json`、一個 GA 服務帳戶金鑰、同一張 Google 試算表。唯一手動維護的母表是 **「府內網站表」**（466 站，`config.SITE_LIST_WS`）；monthly 讀「府內網站表 篩 `合規檢核=是`」的子集、daily 讀 `sync_config` 產的 `private/domains.txt`、engine 讀府內網站表（含每站「頁數」欄自動回填、`局處Email` XLOOKUP 對照欄）。詞庫/分頁參數在「掃描設定」分頁、寄信收件在「局處聯絡人員表」。原「主設定表」已併入府內網站表退役。
 
 > 完整架構、資料流、設計決策與技術債見 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
 

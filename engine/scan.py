@@ -3,14 +3,14 @@
 
 一次靜態優先抓取,上層產兩種剖面:
   health     全站健康掃描:最新消息日期、時效(停更)、抓取方式
-  compliance 合規檢核:14 站送地端 AI 判讀(首頁是否有最新消息區塊等)
+  compliance 合規檢核:合規檢核=是 的站送地端 AI(首頁是否有最新消息區塊等)
 
 清單來源:Google Sheet 站清單母表「府內網站表」(單一事實來源);
          無法連 Sheet 時用 --csv 讀本機對照清單。
 
 用法:
   python -m engine.scan --profile health --limit 10 --csv <path>
-  python -m engine.scan --profile compliance          (14 站,需地端 AI)
+  python -m engine.scan --profile compliance          (合規檢核集,需地端 AI)
   python -m engine.scan --profile both --sheet         (全量,讀 Sheet)
 """
 import argparse
@@ -113,7 +113,7 @@ def health_profile(site, fr):
 
 
 def compliance_profile(site, fr):
-    """14 站合規剖面:送地端 AI 判讀。需 config 的 AI 端點可用。"""
+    """合規剖面(合規檢核=是):送地端 AI 判讀。需 config 的 AI 端點可用。"""
     if not fr["text"]:
         return {"url": site["url"], "name": site["name"], "ai_answer": f"[未判讀] {fr['reason']}", "ai_ok": False}
     try:
