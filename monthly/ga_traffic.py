@@ -11,7 +11,7 @@ GA4 流量撈取工具 (檢核表「網站流量數」= 瀏覽網頁數 = GA4 sc
   1. GCP 專案啟用「Google Analytics Data API」與「Admin API」
   2. 到各網站 GA4 後台: 管理 → 資源存取權管理 → 加入服務帳戶為檢視者
      (服務帳戶 email 見金鑰檔 client_email 欄位)
-  3. 主設定表對應網站填上 GA資源ID 與 GA指標
+  3. 府內網站表對應網站填上 GA資源ID 與 GA指標
 """
 import calendar
 import datetime

@@ -5,7 +5,7 @@
   health     全站健康掃描:最新消息日期、時效(停更)、抓取方式
   compliance 合規檢核:14 站送地端 AI 判讀(首頁是否有最新消息區塊等)
 
-清單來源:Google Sheet 主試算表「TCGweb466站清單」(單一事實來源);
+清單來源:Google Sheet 站清單母表「府內網站表」(單一事實來源);
          無法連 Sheet 時用 --csv 讀本機對照清單。
 
 用法:
@@ -43,16 +43,16 @@ def load_sites(use_sheet, csv_path, only_14=False):
     if use_sheet:
         import config, gspread
         gc = gspread.service_account(filename=config.GA_KEY_FILE)
-        ws = gc.open_by_key(config.MASTER_SHEET_ID).worksheet("TCGweb466站清單")
+        ws = gc.open_by_key(config.MASTER_SHEET_ID).worksheet(config.SITE_LIST_WS)
         data = ws.get_all_records()
         for r in data:
             rows.append({"url": str(r.get("網址", "")).strip(), "name": str(r.get("網站名稱", "")).strip(),
-                         "is14": str(r.get("web_check14站", "")).strip() == "是",
+                         "is14": str(r.get("合規檢核", "")).strip() == "是",
                          "method": str(r.get("內容抓取方式", "")).strip()})
     else:
         for r in csvmod.DictReader(open(csv_path, encoding="utf-8-sig")):
             rows.append({"url": (r.get("網址") or "").strip(), "name": (r.get("網站名稱") or "").strip(),
-                         "is14": (r.get("web_check14站") or "").strip() == "是",
+                         "is14": (r.get("合規檢核") or "").strip() == "是",
                          "method": (r.get("內容抓取方式") or "").strip()})
     rows = [r for r in rows if r["url"]]
     if only_14:

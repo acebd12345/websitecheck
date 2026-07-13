@@ -178,7 +178,7 @@ def main():
     BAD_KW = _build_bad_kw()   # refresh 後重建(模組載入時建的可能是舊快取)
     print(ss_msg, flush=True)
 
-    # 站清單快照:Sheet「TCGweb466站清單」→ 本機CSV。唯一事實來源在 Sheet,
+    # 站清單快照:Sheet「府內網站表」→ 本機CSV。唯一事實來源在 Sheet,
     # 改站清單/網址/抓取方式只改 Sheet,這裡每次執行前自動下載;失敗沿用舊快照。
     if not args.verify:
         try:

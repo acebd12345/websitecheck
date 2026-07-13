@@ -7,7 +7,7 @@
   3. 深層 BFS(選定站,全站爬取 + 外連稽核)         → 全站連結健康(可選,較久)
 產出全部落在 private/reports/<時間>/,並印綜合摘要。
 
-清單單一來源:Google Sheet「TCGweb466站清單」(--sheet)或本機 CSV。
+清單單一來源:Google Sheet「府內網站表」(--sheet)或本機 CSV。
 
 用法:
   python -m engine.run_all --sheet                      健康+合規(預設,不深爬)

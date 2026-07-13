@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-分層探測每個網站「該用哪種方式抓內容」，結果寫回 Google Sheet 主設定表的
+分層探測每個網站「該用哪種方式抓內容」，結果寫回 Google Sheet 站清單母表(府內網站表)的
 「內容抓取方式」欄。以後 monthly_check / node_check 直接照這欄決定怎麼抓，不再每次重猜。
 
 分層(由便宜到貴)：
@@ -10,7 +10,7 @@
   manual      連渲染也讀不到(如3D地圖/登入牆)     → 人工檢視
 
 用法:
-  python probe_method.py            探測全部網站並寫回主設定表
+  python probe_method.py            探測全部網站並寫回府內網站表
   python probe_method.py --dry      只探測、印結果，不寫回
 """
 import re
@@ -23,7 +23,7 @@ import config
 
 KEY = config.GA_KEY_FILE
 SHEET_ID = config.MASTER_SHEET_ID
-MASTER_WS = config.MASTER_WORKSHEET
+SITE_LIST_WS = config.SITE_LIST_WS
 COL_NAME = "內容抓取方式"
 
 HDR = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8", "Accept-Language": "zh-TW"}
@@ -83,7 +83,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     dry = "--dry" in sys.argv
     gc = gspread.service_account(filename=KEY)
-    ws = gc.open_by_key(SHEET_ID).worksheet(MASTER_WS)
+    ws = gc.open_by_key(SHEET_ID).worksheet(SITE_LIST_WS)
     rows = ws.get_all_values()
     header = rows[0]
     # 找/建「內容抓取方式」欄
@@ -123,7 +123,7 @@ def main():
     c = Counter(m for _, m, _ in results)
     print("統計:", dict(c))
     if not dry:
-        print(f"已寫回主設定表「{COL_NAME}」欄")
+        print(f"已寫回府內網站表「{COL_NAME}」欄")
 
 
 if __name__ == "__main__":

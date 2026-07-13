@@ -83,8 +83,8 @@ def load_sites_from_file():
 
 
 def load_sites(cfg):
-    """清單一律來自 domains.txt(由 monthly/sync_config.py 從主設定表自動產生)。
-    主設定表是唯一手動維護的來源,不再直接讀試算表分頁。"""
+    """清單一律來自 domains.txt(由 monthly/sync_config.py 從府內網站表(合規檢核=是)自動產生)。
+    府內網站表是唯一手動維護的來源,不再直接讀試算表分頁。"""
     sites = load_sites_from_file()
     print(f"清單來源: domains.txt({len(sites)} 站)")
     return sites

@@ -174,7 +174,7 @@ def run_check(month, sheet_filter=None):
         node_map = json.load(f)
     if sheet_filter:
         node_map = {k: v for k, v in node_map.items() if sheet_filter in k}
-    # 各站抓取方式(來自主設定表，經 sync 寫入 sites.json)
+    # 各站抓取方式(來自府內網站表，經 sync 寫入 sites.json)
     methods = {}
     sp = config.SITES_JSON
     if os.path.exists(sp):
@@ -215,7 +215,7 @@ def run_check(month, sheet_filter=None):
     if escalate:
         lines.append("## ⚙ 建議調整抓取方式")
         for s in escalate:
-            lines.append(f"- {s}：AI 在靜態內容抓到「空/查無」，建議在主設定表把「內容抓取方式」改為 **playwright**")
+            lines.append(f"- {s}：AI 在靜態內容抓到「空/查無」，建議在府內網站表把「內容抓取方式」改為 **playwright**")
     out = os.path.join(config.REPORTS_DIR, f"節點判讀_{month}.md")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:

@@ -34,7 +34,10 @@ AI_MODEL = get("ai_model")
 AI_API_KEY = get("ai_api_key", "none")
 GA_KEY_FILE = _abspath(get("ga_key_file", "private/ga-service-account.json"))
 MASTER_SHEET_ID = get("master_sheet_id")
-MASTER_WORKSHEET = get("master_worksheet", "主設定表")
+# 唯一站清單母表(原 TCGweb466站清單;原「主設定表」已併入退役)。
+# 月度合規檢核的站 = 此表中「合規檢核」欄=是 的子集。
+SITE_LIST_WS = get("site_list_ws", "府內網站表")
+COMPLIANCE_FLAG_COL = "合規檢核"
 LINK_AUDIT_DIR = _abspath(get("link_audit_dir", ""))  # 轉絕對路徑，避免 cwd 在 monthly/ 時找不到
 
 # ── 標準路徑（產出與個資一律落在 private/）──

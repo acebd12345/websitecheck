@@ -143,7 +143,7 @@ def main():
         if not dry:
             ws["E2"] = new_e2
 
-        # 1b. 表頭聯絡資訊以「主設定表」為準 (填表人A5/分機B5/EmailE5/網站名稱B2)
+        # 1b. 表頭聯絡資訊以「府內網站表」為準 (填表人A5/分機B5/EmailE5/網站名稱B2)
         cfg = site_cfg.get(sheet, {})
         for cell, prefix, key in [("B2", "網站名稱：", "name"), ("A5", "填表人姓名：", "person"),
                                   ("E5", "E-mail：", "email")]:
@@ -155,7 +155,7 @@ def main():
                     if not dry:
                         ws[cell] = newv
                     if key in ("person", "email"):
-                        items.append(f"- 🔄 {cell} {prefix.rstrip('：')}已依主設定表更新為「{val}」")
+                        items.append(f"- 🔄 {cell} {prefix.rstrip('：')}已依府內網站表更新為「{val}」")
         ext = str(cfg.get("ext", "") or "").strip()
         if ext and not dry:
             b5 = str(ws["B5"].value or "")

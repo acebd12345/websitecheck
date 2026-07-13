@@ -2,7 +2,7 @@
 """每站頁數自適應(存在 Google Sheet「頁數」欄,非另開檔)。
 
 概念(使用者設計):
-- 每站實際爬到幾頁,記在主試算表「TCGweb466站清單」的「頁數」欄(單一事實來源)
+- 每站實際爬到幾頁,記在站清單母表(config.SITE_LIST_WS,即「府內網站表」)的「頁數」欄(單一事實來源)
 - 下次掃描上限 = 該站頁數 + BUFFER(100);沒記錄過的新站用 first_default
 - 若這次實際爬到 > 登記值 → 更新「頁數」欄(網站長大,上限跟著長)
 - 搭配 audit_links 的分頁跳過,陷阱頁不計入,登記值不會被灌大
@@ -11,8 +11,12 @@
 """
 import datetime
 
-SHEET_TAB = "TCGweb466站清單"
 BUFFER = 100
+
+
+def _sheet_tab():
+    import config
+    return config.SITE_LIST_WS
 
 
 def get_cap(reg, url, first_default):
@@ -24,11 +28,11 @@ def get_cap(reg, url, first_default):
 def _ws():
     import config, gspread
     gc = gspread.service_account(filename=config.GA_KEY_FILE)
-    return gc.open_by_key(config.MASTER_SHEET_ID).worksheet(SHEET_TAB)
+    return gc.open_by_key(config.MASTER_SHEET_ID).worksheet(config.SITE_LIST_WS)
 
 
 def refresh_csv(path):
-    """Sheet「TCGweb466站清單」整張導出 → 原子性覆寫本機快照 CSV。
+    """Sheet 站清單母表(府內網站表)整張導出 → 原子性覆寫本機快照 CSV。
     讓 Sheet 維持唯一事實來源:改站清單/網址/抓取方式只改 Sheet,掃描前自動下載。
     內容異常(空表/缺網址欄)時丟例外、不覆寫,由呼叫端決定沿用舊快照。回傳資料列數。"""
     import csv, os
