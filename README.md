@@ -15,11 +15,13 @@
 ## 一鍵 / 常用執行
 
 - **合規掃描**：`python -m engine.compliance`（產 `compliance.json`，供檢核表填寫）
-- **全站深度稽核+寄信**（找搶註/掛馬）：`python -m engine.full_overnight --workers 6 --mail`
+- **排程深掃+寄信**（每晚只掃今天那批）：`python -m engine.full_overnight --schedule-today --mail --workers 6`
+- **全站深度稽核+寄信**（找搶註/掛馬，全量）：`python -m engine.full_overnight --workers 6 --mail`
   - 只掃某局處：`--org 教育局`；定點重測：`--only <關鍵字>`；中斷續跑：`--resume <報告目錄>`
   - 對既有報告補寄：`python -m engine.mailer <報告目錄> [--dry-run]`
 - **HTML 報告產生**（單站+全市，吃 AI 複查降級）：`python -m engine.report_html --zip`
 - **站況體檢**（更新時效/停更）：`python -m engine.scan --profile health --sheet`
+- **排程管理**：`python -m engine.schedule --rebuild`（重算30天分批）、`--today`（印今天那批）
 
 ## 安裝
 

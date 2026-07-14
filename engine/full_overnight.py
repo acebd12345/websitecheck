@@ -181,9 +181,13 @@ def main():
     ap.add_argument("--no-report", action="store_true", help="跳過收尾的 HTML 報告產生")
     ap.add_argument("--mail", action="store_true", help="階段4後按局處寄信(預設關)")
     ap.add_argument("--mail-to", default=None, help="收件人 override(測試用;不給則走各局處Email真值)")
+    ap.add_argument("--schedule-today", action="store_true", help="只掃月度掃描排程中今天的那批站")
+    ap.add_argument("--dry-run", action="store_true", help="寄信時不實寄,只印彙整結果")
     args = ap.parse_args()
     if args.verify and args.resume:
         sys.exit("--verify 與 --resume 不可同時使用")
+    if args.schedule_today and (args.org or args.only):
+        sys.exit("--schedule-today 與 --org/--only 互斥")
 
     # 詞庫/分頁參數:Sheet「掃描設定」→本機快取;失敗沿用快取/內建預設,不中斷
     global BAD_KW
@@ -257,6 +261,13 @@ def main():
                     ai_checks_map[url] = [{"url": u.strip(), "question": q.strip()}]
                 else:
                     ai_checks_map[url] = [{"url": url, "question": ai_q}]
+        if args.schedule_today:
+            from engine.schedule import today_batch
+            batch = today_batch()
+            batch_urls = {url for _, url, _, _ in batch}
+            allsites = [s for s in allsites if s[1] in batch_urls]
+            day_n = ((datetime.date.today().day - 1) % 30) + 1
+            print(f"[排程] Day {day_n}：篩出 {len(allsites)} 站\n", flush=True)
         if args.org: allsites = [s for s in allsites if s[2] == args.org]
         if args.only:
             toks = [t.strip().lower() for t in args.only.split(",") if t.strip()]
@@ -439,8 +450,9 @@ def main():
         try:
             from engine.mailer import run as mailer_run
             rcpt_desc = args.mail_to or "各局處Email真值"
-            print(f"\n[寄信] 按局處彙整寄信(收件人: {rcpt_desc})...", flush=True)
-            sent, skipped, details = mailer_run(outdir, mail_to=args.mail_to or None)
+            dry_tag = " [DRY-RUN]" if args.dry_run else ""
+            print(f"\n[寄信] 按局處彙整寄信(收件人: {rcpt_desc}){dry_tag}...", flush=True)
+            sent, skipped, details = mailer_run(outdir, mail_to=args.mail_to or None, dry_run=args.dry_run)
             print(f"[寄信] 完成: 寄出 {sent} 封, 跳過 {len(skipped)} 局處(零真問題)", flush=True)
         except Exception as e:
             print(f"\n[警告] 寄信失敗({type(e).__name__}: {e})", flush=True)

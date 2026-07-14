@@ -46,7 +46,7 @@ jobs:
           import audit_links
           assert audit_links.SUSPICIOUS_KEYWORDS and audit_links.KEYWORD_PATTERNS
           assert len(audit_links.PAGINATION_PARAMS) >= 8
-          from engine import crawl, scan, dates, fetch_layered, page_budget, full_overnight, report_html, mailer, compliance
+          from engine import crawl, scan, dates, fetch_layered, page_budget, full_overnight, report_html, mailer, compliance, schedule
           import webcheck_ai, deep_check, sync_config, update_excel, node_check, ga_traffic, probe_method
           print("全模組載入 OK(fallback 設定)")
           EOF
