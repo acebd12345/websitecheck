@@ -62,7 +62,7 @@ web_check/
 ├─ 每月檢核.bat / 每日稽核.bat            兩個一鍵入口
 ├─ monthly/   每月檢核程式
 ├─ daily/     連結稽核引擎（audit_links.py 保留；寄信已移至 engine/mailer.py）
-├─ engine/    統一引擎（full_overnight 四階段深掃、compliance.py 合規檢核、scan/run_all 雙剖面、fetch_layered 分層抓取…）
+├─ engine/    統一引擎（full_overnight 四階段深掃、compliance.py 合規檢核、scan 停更剖面、fetch_layered 分層抓取…）
 ├─ docs/      架構與雲端化文件（見下）
 └─ private/   機敏、個資、產出（gitignore）
    ├─ config.json / ga-service-account.json

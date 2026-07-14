@@ -14,11 +14,6 @@ import datetime
 BUFFER = 100
 
 
-def _sheet_tab():
-    import config
-    return config.SITE_LIST_WS
-
-
 def get_cap(reg, url, first_default):
     """回傳該站這次的頁數上限。已知站=頁數+BUFFER;新站=first_default。"""
     p = reg.get(url, 0)

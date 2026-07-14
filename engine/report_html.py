@@ -120,12 +120,6 @@ def _parse_dir_stamp(dirname):
     return None
 
 
-def _pill(label, color=None):
-    if color is None:
-        color = PILL_COLORS.get(label, "#6b7280")
-    return f'<span class="pill" style="background:{color}">{_h(label)}</span>'
-
-
 def _card(number, label):
     return f'<div class="c"><div class="n">{number}</div><div class="l">{_h(label)}</div></div>'
 
