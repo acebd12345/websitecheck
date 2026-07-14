@@ -6,15 +6,17 @@
   - SUSPICIOUS 且 AI 判 C(誤報) → 不列入信
   - SUSPICIOUS 且 AI 判 ?(待人工) → 列在信末「待人工確認」區，不當警報
   - 一個局處若複查後 0 條真問題 → 不寄
-  - 收件人讀府內網站表「局處Email」；鐵律 override 預設蓋成 config 的 mail_override_to（使用者信箱）
+  - 收件人：各局處在府內網站表「局處Email」欄的真值（per-局處）
+  - --mail-to 為可選 override（給了才蓋全部收件人，測試用）
+  - 查無 Email → fallback config mail_override_to → 兩者皆無跳過並警告
 
 用法：
   # 搭配 full_overnight（階段4後自動呼叫，需 --mail）
-  python -m engine.full_overnight --mail --mail-to <收件人>
+  python -m engine.full_overnight --mail
 
   # 獨立對既有報告補寄
   python -m engine.mailer <報告目錄>
-  python -m engine.mailer <報告目錄> --mail-to someone@example.com
+  python -m engine.mailer <報告目錄> --mail-to someone@example.com   # override 測試
   python -m engine.mailer <報告目錄> --dry-run   # 不寄，只印彙整結果
 """
 import argparse, configparser, csv, datetime, html, json, os, sys
@@ -25,7 +27,7 @@ import config
 
 CSV_LIST = os.path.join(config.PRIVATE_DIR, "TCGweb_466站對照清單_v2.csv")
 
-DEFAULT_MAIL_TO = config.get("mail_override_to", "")
+FALLBACK_MAIL_TO = config.get("mail_override_to", "")
 
 RISK_LABEL = {
     "SUSPICIOUS": "可疑內容(賭博/色情/停放頁)",
@@ -290,11 +292,13 @@ def send_mail(to, subject, html_body, attachment):
 # ── 主流程 ──
 
 def run(outdir, mail_to=None, dry_run=False):
-    """對報告目錄執行寄信。回傳 (sent_count, skipped_orgs, details)。"""
+    """對報告目錄執行寄信。回傳 (sent_count, skipped_orgs, details)。
+
+    mail_to: 全部收件人 override（測試用）。None=走各局處Email真值。
+    """
     sys.stdout.reconfigure(encoding="utf-8")
-    mail_to = mail_to or DEFAULT_MAIL_TO
-    if not mail_to:
-        sys.exit("錯誤: 未指定收件人。請用 --mail-to 或在 config.json 設 mail_override_to")
+    override = mail_to   # 明確給了才蓋全部收件人
+    fallback = FALLBACK_MAIL_TO
 
     allp, verified, progress = load_report(outdir)
     groups = group_by_org(allp, verified, progress)
@@ -319,8 +323,20 @@ def run(outdir, mail_to=None, dry_run=False):
             print(f"  [{org}] 複查後 0 條真問題,不寄")
             continue
 
-        to = mail_to  # 鐵律 override
-        real_email = org_email.get(org, "")
+        # 收件人決定：override > 局處Email > fallback > 跳過
+        if override:
+            to = override
+        else:
+            to = org_email.get(org, "")
+            if not to:
+                if fallback:
+                    to = fallback
+                    print(f"  ⚠ [{org}] 查無局處Email, fallback → {to}")
+                else:
+                    print(f"  ⚠ [{org}] 查無局處Email 且無 fallback, 跳過(不得寄錯人)")
+                    skipped.append(org)
+                    continue
+
         subject = make_subject(org, problems, stamp)
         body = build_mail_html(org, problems, stamp)
 
@@ -328,7 +344,7 @@ def run(outdir, mail_to=None, dry_run=False):
         n_pending = sum(1 for p in problems if p.get("_pending_human"))
         n_susp = sum(1 for p in confirmed if p["risk"] == "SUSPICIOUS")
 
-        info = {"org": org, "to": to, "real_email": real_email,
+        info = {"org": org, "to": to,
                 "confirmed": n_confirmed, "pending_human": n_pending,
                 "suspicious": n_susp, "subject": subject}
         details.append(info)
@@ -358,8 +374,8 @@ def run(outdir, mail_to=None, dry_run=False):
 def main():
     ap = argparse.ArgumentParser(description="對深掃報告目錄按局處寄信")
     ap.add_argument("outdir", help="報告目錄路徑(full_overnight_* 目錄)")
-    ap.add_argument("--mail-to", default=DEFAULT_MAIL_TO or None,
-                    help="收件人 override(預設讀 config mail_override_to)")
+    ap.add_argument("--mail-to", default=None,
+                    help="收件人 override(測試用;不給則走各局處Email真值)")
     ap.add_argument("--dry-run", action="store_true", help="不寄信,只印彙整結果")
     args = ap.parse_args()
 
@@ -368,8 +384,9 @@ def main():
         outdir = os.path.join(config.PRIVATE_DIR, "reports", outdir)
 
     print(f"===== 深掃寄信 {os.path.basename(outdir)} =====")
-    print(f"收件人: {args.mail_to}" + (" [DRY-RUN]" if args.dry_run else ""))
-    sent, skipped, details = run(outdir, mail_to=args.mail_to, dry_run=args.dry_run)
+    rcpt_desc = args.mail_to or "各局處Email真值"
+    print(f"收件人: {rcpt_desc}" + (" [DRY-RUN]" if args.dry_run else ""))
+    sent, skipped, details = run(outdir, mail_to=args.mail_to or None, dry_run=args.dry_run)
     print(f"\n完成: 寄出 {sent} 封, 跳過 {len(skipped)} 局處(零真問題)")
 
 

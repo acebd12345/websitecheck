@@ -48,9 +48,10 @@ BAD_KW = _build_bad_kw()
 CEIL = 9000    # 加碼硬上限:爬到 9000 頁還沒爬完的超大站就停,不再往上加
 
 def audit_one(task):
-    """逐步加碼爬完:先 1000,撞牆→+2000(=3000),再撞牆→每次 +3000,直到爬完或達上限。"""
-    name, url, org, method, first_cap, outdir, whitelist, skip_hosts = task
-    sys.path.insert(0, _ROOT); sys.path.insert(0, os.path.join(_ROOT, "daily"))
+    """逐步加碼爬完:先 1000,撞牆→+2000(=3000),再撞牆→每次 +3000,直到爬完或達上限。
+    同時跑基本合規檢查(HTTPS/RWD/搜尋/無障礙);合規站加 deep_check。"""
+    name, url, org, method, first_cap, outdir, whitelist, skip_hosts, is_compliance, no_escalate = task
+    sys.path.insert(0, _ROOT); sys.path.insert(0, os.path.join(_ROOT, "daily")); sys.path.insert(0, os.path.join(_ROOT, "monthly"))
     import audit_links
     audit_links.ALLOW_RENDER = (method == "playwright")
     tag = norm_host(url).replace(".", "_")
@@ -61,11 +62,10 @@ def audit_one(task):
                 links_log_path=os.path.join(outdir, f"links_{tag}.jsonl"),
                 content_whitelist=whitelist, skip_hosts=skip_hosts)
             lc = getattr(audit_links, "LAST_CRAWL", {"pages": 0, "capped": False})
-            if not lc.get("capped") or cap >= CEIL:
+            if not lc.get("capped") or cap >= CEIL or no_escalate:
                 break
             cap = min(cap + step, CEIL); step = 3000; rounds += 1   # 1000→3000→6000→9000 封頂
         # 0 頁保護:可能是掃描當下暫時抓空,或靜態空殼(SPA)。開渲染重試最多 2 次。
-        # 靜態有料者重試仍走靜態即成功;SPA 空殼者這次會被渲染成功。
         retried = 0
         while lc.get("pages", 0) == 0 and retried < 2:
             retried += 1
@@ -76,16 +76,26 @@ def audit_one(task):
                 content_whitelist=whitelist, skip_hosts=skip_hosts)
             lc = getattr(audit_links, "LAST_CRAWL", {"pages": 0, "capped": False})
         probs = [r for r in results if r["risk"] != "OK"]
+        # ── 合規檢查(每站基本 + 合規站 deep_check) ──
+        comp = {}
+        try:
+            from engine.compliance import run_basic, run_deep
+            comp = run_basic(url)
+            if is_compliance and comp.get("alive"):
+                comp["deep"] = run_deep(url)
+        except Exception as e:
+            comp["compliance_error"] = f"{type(e).__name__}: {e}"
         return {"name": name, "url": url, "org": org, "status": "ok",
                 "links": len(results), "problems": probs, "n_problems": len(probs),
                 "pages": lc.get("pages", 0), "capped": lc.get("capped", False),
                 "rounds": rounds, "final_cap": cap, "retried": retried,
                 "suspicious": sum(1 for p in probs if p["risk"]=="SUSPICIOUS"),
-                "dead": sum(1 for p in probs if p["risk"]=="DEAD")}
+                "dead": sum(1 for p in probs if p["risk"]=="DEAD"),
+                "compliance": comp, "is_compliance": is_compliance}
     except Exception as e:
         return {"name": name, "url": url, "org": org, "status": f"fail:{type(e).__name__}",
                 "links": 0, "problems": [], "n_problems": 0, "pages": 0, "capped": False,
-                "rounds": 0, "suspicious": 0, "dead": 0}
+                "rounds": 0, "suspicious": 0, "dead": 0, "compliance": {}, "is_compliance": is_compliance}
 
 
 # ── 階段2/3 輔助 ──
@@ -161,6 +171,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-pages", type=int, default=1000, help="首掃頁數;撞牆自動加碼")
+    ap.add_argument("--force-cap", type=int, default=0, help="強制所有站首掃上限=N頁(停用加碼+頁數回寫);環境驗證/淺掃用")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--org", default="", help="只掃指定局處(如 資訊局),測試/分局處跑用")
@@ -169,7 +180,7 @@ def main():
     ap.add_argument("--verify", default="", help="複查:不重爬,對既有報告目錄的 all_problems.csv 重跑階段2-4(取代舊 verify_suspicious)")
     ap.add_argument("--no-report", action="store_true", help="跳過收尾的 HTML 報告產生")
     ap.add_argument("--mail", action="store_true", help="階段4後按局處寄信(預設關)")
-    ap.add_argument("--mail-to", default=config.get("mail_override_to", ""), help="收件人 override(鐵律:預設讀 config mail_override_to)")
+    ap.add_argument("--mail-to", default=None, help="收件人 override(測試用;不給則走各局處Email真值)")
     args = ap.parse_args()
     if args.verify and args.resume:
         sys.exit("--verify 與 --resume 不可同時使用")
@@ -226,31 +237,54 @@ def main():
         skip_hosts = tuple(w.strip().lower() for w in str(scan.get("skip_hosts","")).split(",") if w.strip())
 
         rows = list(csv.DictReader(open(CSV_LIST, encoding="utf-8-sig")))
-        allsites = [(r.get("網站名稱","").strip(), r.get("網址","").strip(), r.get("局處","").strip(),
-                     r.get("內容抓取方式","").strip()) for r in rows if r.get("網址","").strip()]
+        # 每列多抓合規旗標 + AI判讀題目(合規AI在階段1後串行跑)
+        allsites = []
+        ai_checks_map = {}   # url → [{"url":..,"question":..}]
+        for r in rows:
+            url = r.get("網址","").strip()
+            if not url:
+                continue
+            name = r.get("網站名稱","").strip()
+            org = r.get("局處","").strip()
+            method = r.get("內容抓取方式","").strip()
+            is_comp = r.get("合規檢核","").strip() == "是"
+            allsites.append((name, url, org, method, is_comp))
+            # 解析 AI 判讀題目
+            ai_q = r.get("AI判讀題目","").strip()
+            if is_comp and ai_q:
+                if "|" in ai_q:
+                    u, q = ai_q.split("|", 1)
+                    ai_checks_map[url] = [{"url": u.strip(), "question": q.strip()}]
+                else:
+                    ai_checks_map[url] = [{"url": url, "question": ai_q}]
         if args.org: allsites = [s for s in allsites if s[2] == args.org]
         if args.only:
             toks = [t.strip().lower() for t in args.only.split(",") if t.strip()]
             allsites = [s for s in allsites if any(t in s[0].lower() or t in s[1].lower() for t in toks)]
         if args.limit: allsites = allsites[:args.limit]
         # 讀 Sheet「頁數」欄:已知站首掃上限=記錄值+100;新站用 --max-pages(1000)。撞牆再加碼。
-        try:
-            reg = page_budget.read_sheet()
-        except Exception as e:
-            print(f"[警告] 讀 Sheet 頁數欄失敗({type(e).__name__}),全用首掃上限 {args.max_pages}", flush=True)
+        # --force-cap 時全用指定值、停用加碼。
+        no_escalate = bool(args.force_cap)
+        if args.force_cap:
             reg = {}
+        else:
+            try:
+                reg = page_budget.read_sheet()
+            except Exception as e:
+                print(f"[警告] 讀 Sheet 頁數欄失敗({type(e).__name__}),全用首掃上限 {args.max_pages}", flush=True)
+                reg = {}
         new_pages = {}
         n_known = 0
         tasks, skipped = [], []
-        for name,url,org,method in allsites:
+        for name,url,org,method,is_comp in allsites:
             if url in done_urls:
                 continue  # 續跑:已完成,跳過
             if method in SKIP_METHODS or norm_host(url) in SKIP_HOSTS:
                 skipped.append({"name":name,"url":url,"org":org,"status":method or "skip","n_problems":0})
             else:
-                first_cap = page_budget.get_cap(reg, url, first_default=args.max_pages)
+                first_cap = args.force_cap if args.force_cap else page_budget.get_cap(reg, url, first_default=args.max_pages)
                 if url in reg: n_known += 1
-                tasks.append((name,url,org,method,first_cap,outdir,whitelist,skip_hosts))
+                tasks.append((name,url,org,method,first_cap,outdir,whitelist,skip_hosts,is_comp,no_escalate))
         n_pw = sum(1 for t in tasks if t[3]=="playwright")
         t0 = time.time()
         print(f"===== 全網站深度稽核 {stamp} =====", flush=True)
@@ -278,7 +312,7 @@ def main():
                 for p in r["problems"]:
                     cw.writerow({"site_name":r["name"],"org":r["org"],**p})
                 cfp.flush()
-                prog.append({k:v for k,v in r.items() if k!="problems"})
+                prog.append({k:v for k,v in r.items() if k not in ("problems",)})
                 json.dump(prog, open(progress,"w",encoding="utf-8"), ensure_ascii=False)
                 if r.get("status") == "ok":
                     new_pages[r["url"]] = r.get("pages", 0)   # 本次真實頁數,結束寫回 Sheet
@@ -289,11 +323,53 @@ def main():
                 print(f"[階段1 {done}/{len(tasks)}] {r['name'][:16]:18} {r.get('pages',0)}頁{mark} 連結{r['links']} 異常{r['n_problems']}(搶註{r['suspicious']} 死{r['dead']}) [{r['status']}] {time.time()-t0:.0f}s", flush=True)
         cfp.close()
         # 把本次真實頁數寫回 Sheet「頁數」欄(URL 對鍵,只在變大時更新 → 記錄各站最大值)
-        try:
-            chg = page_budget.write_sheet(new_pages)
-            print(f"\n頁數已寫回 Sheet:本次 {len(new_pages)} 站,更新記錄 {chg} 站", flush=True)
-        except Exception as e:
-            print(f"\n[警告] 頁數寫回 Sheet 失敗({type(e).__name__});頁數仍存於 progress.json", flush=True)
+        # --force-cap 時跳過(淺掃頁數無參考價值)
+        if args.force_cap:
+            print(f"\n[force-cap] 跳過頁數寫回 Sheet(淺掃頁數無參考價值)", flush=True)
+        else:
+            try:
+                chg = page_budget.write_sheet(new_pages)
+                print(f"\n頁數已寫回 Sheet:本次 {len(new_pages)} 站,更新記錄 {chg} 站", flush=True)
+            except Exception as e:
+                print(f"\n[警告] 頁數寫回 Sheet 失敗({type(e).__name__});頁數仍存於 progress.json", flush=True)
+        # ── 合規結果蒐集 → compliance.json ──
+        compliance_all = {}
+        for p in prog:
+            name = p.get("name", "")
+            url = p.get("url", "")
+            if not name or not url:
+                continue
+            comp = p.get("compliance", {})
+            if not comp:
+                continue
+            compliance_all[name] = {
+                "name": name, "url": url, "org": p.get("org", ""),
+                "compliance_flag": bool(p.get("is_compliance")),
+                "urls": {url: comp}, "ai": [],
+            }
+        # ── 合規 AI 判讀(只對合規站,串行) ──
+        comp_ai_sites = [(name, url, ai_checks_map.get(url, []))
+                         for name, url, org, method, is_comp in allsites
+                         if is_comp and url in ai_checks_map
+                         and name in compliance_all]
+        if comp_ai_sites:
+            from engine.compliance import run_ai_checks
+            print(f"\n===== 合規 AI 判讀({len(comp_ai_sites)} 站) =====", flush=True)
+            for i, (name, url, checks) in enumerate(comp_ai_sites, 1):
+                print(f"[合規AI {i}/{len(comp_ai_sites)}] {name[:20]}...", flush=True)
+                try:
+                    ai_results = run_ai_checks(checks)
+                    compliance_all[name]["ai"] = ai_results
+                    for ar in ai_results:
+                        print(f"  Q: {ar['question'][:40]}  A: {ar['answer'][:60]}", flush=True)
+                except Exception as e:
+                    print(f"  !! AI失敗: {e}", flush=True)
+        # 寫 compliance.json
+        comp_path = os.path.join(outdir, "compliance.json")
+        json.dump(compliance_all, open(comp_path, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=1)
+        n_comp = sum(1 for v in compliance_all.values() if v.get("compliance_flag"))
+        print(f"\n合規結果:{len(compliance_all)} 站(含 {n_comp} 合規站) → {comp_path}", flush=True)
         print(f"\n階段1 完成 {time.time()-t0:.0f}s\n", flush=True)
 
     # ── 階段2 + 3 ──
@@ -362,8 +438,9 @@ def main():
     if args.mail:
         try:
             from engine.mailer import run as mailer_run
-            print(f"\n[寄信] 按局處彙整寄信(收件人: {args.mail_to})...", flush=True)
-            sent, skipped, details = mailer_run(outdir, mail_to=args.mail_to)
+            rcpt_desc = args.mail_to or "各局處Email真值"
+            print(f"\n[寄信] 按局處彙整寄信(收件人: {rcpt_desc})...", flush=True)
+            sent, skipped, details = mailer_run(outdir, mail_to=args.mail_to or None)
             print(f"[寄信] 完成: 寄出 {sent} 封, 跳過 {len(skipped)} 局處(零真問題)", flush=True)
         except Exception as e:
             print(f"\n[警告] 寄信失敗({type(e).__name__}: {e})", flush=True)

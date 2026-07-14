@@ -5,7 +5,7 @@
   2. 下載文件通用格式 — 收集附件連結, 檢查 Office 檔(doc/docx/xls/xlsx/ppt/pptx)
      是否在同一頁提供 PDF 或 ODF(odt/ods/odp) 替代版本(檢核表(一)要求)
 
-被 monthly_check.py 引用; 也可單獨執行:
+被 engine/compliance.py 引用; 也可單獨執行:
   python deep_check.py https://網址 [最大頁數]
 (外部連結的失效/被搶註/可疑內容由 link_audit 每日排程負責, 本模組只看站內)
 """

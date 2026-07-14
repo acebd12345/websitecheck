@@ -1,7 +1,7 @@
 # websitecheck 專案架構文件
 
 > 本文件由程式碼全面走讀後整理，供日後回來快速上手。**只描述現況**。
-> 最近更新（2026-07）：試算表收斂為 4 分頁（府內網站表為單一母表、主設定表退役）、詞庫/站清單/分頁參數單一來源化、`full_overnight --verify`、`report_html` 報告產生器、CI/CD、Gemini 供應商、局處寄信 Sheet 公式、**寄信搬進深掃 `engine/mailer.py`（按局處彙整、吃 AI 複查）、daily 退役**。
+> 最近更新（2026-07）：試算表收斂為 4 分頁（府內網站表為單一母表、主設定表退役）、詞庫/站清單/分頁參數單一來源化、`full_overnight --verify`、`report_html` 報告產生器、CI/CD、Gemini 供應商、局處寄信 Sheet 公式、寄信搬進深掃 `engine/mailer.py`（按局處彙整、吃 AI 複查）、daily 退役、**Phase 2：`monthly_check.py` 退役、合規檢核搬進 `engine/compliance.py`（深掃 worker 整合）、`report_html` 加合規檢核紅綠燈、`update_excel` 改讀 compliance.json、`full_overnight --force-cap`**。
 
 ---
 
@@ -30,13 +30,13 @@
 
 | 子系統 | 資料夾 | 頻率 | 做什麼 | 產出 |
 |---|---|---|---|---|
-| **每月檢核** | `monthly/` | 每月（本機 Windows） | HTTPS/RWD/連結/站內深爬、GA 流量、AI 內容判讀 | 檢核表 Excel + 月報 md/json |
+| ~~每月檢核~~ | `monthly/` | **主流程已退役** | `monthly_check.py` 已退役(git rm)；檢查邏輯搬進 `engine/compliance.py`（深掃 worker 整合）。`deep_check.py` 保留(被 compliance 匯入)、`update_excel.py` 讀 compliance.json 產 Excel | 檢核表 Excel(由 update_excel 產) |
 | ~~每日連結稽核~~ | `daily/` | **已退役** | 掃描引擎 `audit_links.py` 保留；寄信併入 `engine/mailer.py` | — |
 | **統一引擎** | `engine/` | 手動 / 整夜 / 排程 | 靜態優先抓取地基 + 全 466 站深度稽核 + **按局處寄信（AI 複查後）** + HTML 報告 | reports/ 下 json/csv + Email |
 
-兩者**共用同一份設定 `config.py`、同一個 Google 服務帳戶、同一張試算表**。
-`engine/` 把 `daily/audit_links.py`（連結稽核引擎）與 `monthly`（AI 判讀、日期抽取）的能力
-接起來，疊出「全站深度稽核 + 按局處寄信」的完整管線。
+各子系統**共用同一份設定 `config.py`、同一個 Google 服務帳戶、同一張試算表**。
+`engine/` 把 `daily/audit_links.py`（連結稽核引擎）與 `monthly`（AI 判讀、日期抽取、站內深爬）的能力
+接起來，疊出「全站深度稽核 + 合規檢核 + 按局處寄信」的完整管線。
 
 ### 資料的單一事實來源：Google 試算表「府內網站表」
 唯一手動維護的母表（466 站），程式端集中在 `config.SITE_LIST_WS`。試算表共 4 張分頁：
@@ -50,7 +50,7 @@
 
 > 原「主設定表」（14 站合規子集）已**併入府內網站表退役**——合規站改由 `合規檢核=是` 旗標標記；欄位重複、兩表漂移的問題消除。
 
-- `monthly/sync_config.py` 讀「府內網站表 篩 `合規檢核=是`」產出：`private/sites.json`（monthly 用）、`private/domains.txt`（寄信用）。
+- `monthly/sync_config.py` 讀「府內網站表 篩 `合規檢核=是`」產出：`private/sites.json`（合規站清單）。~~`domains.txt` 產出已移除~~（寄信改由 `engine/mailer.py` 直接讀 Sheet `局處Email` 欄）。
 - 大量掃描讀本機快照 `private/TCGweb_466站對照清單_v2.csv`——**`full_overnight` 每次執行前自動從府內網站表重新下載**（`page_budget.refresh_csv`，失敗沿用舊快照），故改站清單/網址/抓取方式**只改 Sheet 即可**，快照只是快取。
 - **局處→寄信對照（Sheet 公式，零程式）**：府內網站表的 `局處Email` 欄用 `XLOOKUP` 查局處聯絡人員表，查不到自動落預設信箱；局處聯絡人員表另有偵測公式，即時列出「母表有、聯絡人表沒建」的局處。局處清單只在母表維護，聯絡人表用局處對鍵、漏的會被抓出、寄信永遠有兜底。
 
@@ -63,22 +63,21 @@ websitecheck/
 ├─ config.py                 共用設定載入器(private/config.json → 根目錄 → example)
 ├─ scan_settings.py          掃描設定單一來源(Sheet「掃描設定」→ 快取 → 內建預設;詞庫/分頁參數)
 ├─ config.example.json       設定範本(公開)
-├─ 每月檢核.bat / 每日稽核.bat  兩個一鍵入口(純 ASCII 檔名以外的中文，注意編碼)
+├─ ~~每月檢核.bat~~ (已退役 git rm) / 每日稽核.bat
 ├─ requirements.txt
 │
-├─ monthly/   ── 每月合規檢核 ────────────────────────────────
-│   ├─ monthly_check.py   主流程：對每站查 HTTPS/憑證/HSTS、RWD、檢索、無障礙、
-│   │                     首頁連結失效、站內深爬(呼叫 deep_check)、AI 內容判讀，
-│   │                     並把 daily 的連結稽核結果(read_link_audit)併進月報
+├─ monthly/   ── 合規檢核輔助（主流程已搬進 engine/compliance.py）──
+│   ├─ ~~monthly_check.py~~  已退役(git rm)；檢查邏輯搬進 engine/compliance.py
 │   ├─ deep_check.py      站內深度 BFS(≤150頁)：內部失效連結 + Office 檔缺 PDF/ODF 替代版
+│   │                     (被 engine/compliance.py import 使用)
 │   ├─ node_check.py      檢核表(一) 逐節點 AI 內容判讀
 │   ├─ ga_traffic.py      撈 GA4 screenPageViews(檢核表的「網站流量數」)
 │   ├─ probe_method.py    探測每站「該用哪種抓取方式」→ 寫回府內網站表「內容抓取方式」欄
-│   ├─ sync_config.py     府內網站表(合規檢核=是) → sites.json + domains.txt
-│   ├─ update_excel.py    把結果寫進網站檢核表 Excel
+│   ├─ sync_config.py     府內網站表(合規檢核=是) → sites.json (domains.txt 產出已移除)
+│   ├─ update_excel.py    讀 compliance.json 產檢核表 Excel(以「網站名稱」為鍵比對工作表)
 │   ├─ webcheck_ai.py     ★ 共用 AI 模組：fetch_html / html_to_text / ask_ai
 │   │                     (支援 openai 相容 / anthropic / gemini 三家，engine 也重用它)
-│   ├─ smoke_test.py      部署冒煙測試(不寫檔、不改線上)
+│   ├─ smoke_test.py      部署冒煙測試(不寫檔、不改線上; monthly_check 已從模組清單移除)
 │   └─ 每月建立檢核表.gs   Google Apps Script(在試算表端)
 │
 ├─ daily/    ── 連結稽核引擎（寄信已退役，移至 engine/mailer.py）──
@@ -86,16 +85,16 @@ websitecheck/
 │                          所有搶註/賭博/色情/失效判斷、誤報防呆都在這支(見 §5)
 │
 ├─ engine/   ── 統一引擎(整併地基) ───────────────────────────
-│   (詳見 §3.1，共 11 檔)
+│   (詳見 §3.1，共 12 檔)
 │
 └─ private/  ── 機敏/個資/產出，整個 gitignore ─────────────
     ├─ config.json / ga-service-account.json
-    ├─ sites.json / domains.txt / nodes_map.json
+    ├─ sites.json / nodes_map.json
     ├─ TCGweb_466站對照清單_v2.csv   466 站離線快照(engine 大量掃描讀這支)
     └─ reports/…                     各式報告(full_overnight_* / linkaudit_all_* / engine_run_*)
 ```
 
-### 3.1 engine/ 那 11 個檔
+### 3.1 engine/ 那 12 個檔
 
 分成三層：**地基（抓取）→ 中層（爬取/清單）→ 上層（驅動/剖面/報告）**。
 
@@ -107,10 +106,11 @@ websitecheck/
 | **`crawl.py`** | 中層 | 深層 BFS 爬蟲(`crawl_site`)。每頁走 `fetch_layered`，做 sitemap 優先、內/外連結拆分、同標題+分頁去重、外連狀態檢查、日期抽取。**產健康向的頁面清單**，非搶註判斷 |
 | `page_budget.py` | 中層 | 每站頁數自適應：讀/寫府內網站表「頁數」欄。`get_cap`=上次頁數+100；掃完把本次真實頁數寫回(URL 對鍵、只在變大時更新) |
 | **`scan.py`** | 上層 | 雙剖面驅動：`health_profile`(最新消息日期/停更判定/抓取方式) + `compliance_profile`(合規檢核=是 的站送地端 AI 判「首頁有無最新消息區塊」)。`load_sites` 支援 Sheet 或 CSV |
+| **`compliance.py`** | 上層 | ★ **合規檢核模組**（原 `monthly_check.py` 邏輯搬入）。HTTPS/憑證/HSTS、RWD、站內檢索、無障礙標章、首頁連結失效、站內深爬(`deep_check`)、AI 內容判讀。基本合規 466 站都做（成本近零）；AI+deep_check 只做「合規檢核=是」的站。由 `full_overnight` worker 呼叫，產出 `compliance.json` |
 | **`run_all.py`** | 上層 | 日常執行殼：一次跑 健康剖面(全站) → 合規剖面(合規檢核集 AI) → 選擇性深爬(`--deep`/`--deep-stale`)，產綜合摘要 |
-| **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核**(整夜無人值守) + `--mail` 按局處寄信。見 §4 |
+| **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核**(整夜無人值守) + `--mail` 按局處寄信 + 合規檢核整合(`compliance.py`)。`--force-cap N` 強制所有站首掃上限=N 頁（停用加碼+頁數回寫，環境驗證/淺掃用）。見 §4 |
 | **`mailer.py`** | 上層 | 深掃寄信模組：讀報告目錄按局處彙整、吃 AI 複查(C 不寄)、`--mail-to` override 收件人(鐵律)。`full_overnight --mail` 自動呼叫，也可獨立跑 `python -m engine.mailer <報告目錄>` |
-| **`report_html.py`** | 上層 | HTML 報告產生器：把掃描產出轉成單站報告(按局處歸資料夾)＋全市總報告。吃 AI 複查判定(C→附錄、A/B→置頂)。`full_overnight` 收尾自動呼叫，也可獨立跑 `python -m engine.report_html` |
+| **`report_html.py`** | 上層 | HTML 報告產生器：把掃描產出轉成單站報告(按局處歸資料夾)＋全市總報告。吃 AI 複查判定(C→附錄、A/B→置頂)；新增**合規檢核**區塊(紅綠燈表格，讀 compliance.json)。`full_overnight` 收尾自動呼叫，也可獨立跑 `python -m engine.report_html` |
 | ~~`verify_suspicious.py`~~ | — | **已移除**（2026-07，功能由 `full_overnight --verify` 取代） |
 
 ---
@@ -129,7 +129,8 @@ websitecheck/
 【階段1】站層級多行程平行(ProcessPoolExecutor, 每站獨立行程 max_tasks_per_child=1)
    每站 audit_one：
      ALLOW_RENDER = (method=="playwright")         ← 渲染只給 playwright 站
-     首掃上限 = page_budget.get_cap(頁數欄+100)
+     首掃上限 = page_budget.get_cap(頁數欄+100)    (--force-cap N 時全用 N、停用加碼)
+     ★ compliance.run_checks(站)                  ← 合規檢核(HTTPS/RWD…)整合進每站 worker
      audit_links.audit_site(url, cap):
         crawl_internal  BFS 爬站內頁(≤8 執行緒)，收集所有【對外】連結 + 出現位置
                         分頁參數(page/date/…)不再往下挖，避免月曆無限頁
@@ -161,17 +162,20 @@ websitecheck/
 1. 讀 `all_problems.csv` + `suspicious_verified.csv`，按局處分組
 2. SUSPICIOUS 依 AI 複查判定過濾：**A/B 才列入信、C(誤報)不寄、?(待人工)列信末備註**
 3. 一個局處若複查後 0 條真問題 → 不寄（避免空信轟炸）
-4. 收件人：讀府內網站表 `局處Email`；`--mail-to` override 預設讀 config `mail_override_to`（鐵律）
+4. 收件人：預設走各局處 `局處Email` 真值(per-局處，從 466 站 CSV 讀取)；`--mail-to` override 可指定(測試用)；查無 Email 時 fallback→config `mail_override_to`，再無則跳過(不得寄錯人)
 5. 一封信含該局處所有異常站、HTML 版型 + CSV 附件、主旨含局處名+異常數（A 判定加「【急】」）
 
 可獨立對既有報告補寄：`python -m engine.mailer <報告目錄> [--mail-to ...] [--dry-run]`
 
-### 4.3 每月合規檢核（`monthly_check.py`）
+### 4.3 合規檢核（`engine/compliance.py`，整合進深掃 worker）
 
-`sites.json` → 每站查 HTTPS 憑證/HSTS、RWD、檢索、無障礙標章、首頁連結失效、
-`deep_check` 站內深爬、AI 內容判讀 → **並讀入 `links_*.jsonl`/`problems_*.csv`
-把連結稽核結果併進月報**（日掃退役後這些檔不再產生，`read_link_audit` 安全回 None）
-→ 產 `report_<民國月>.md` + `result_<月>.json`。
+> `monthly_check.py` 已退役(git rm)。其檢查邏輯搬進 `engine/compliance.py`，由 `full_overnight` 的每站 worker 呼叫，不再獨立執行。
+
+**檢查項目**（同原 monthly_check）：HTTPS 憑證/HSTS、RWD、站內檢索、無障礙標章、首頁連結失效、站內深爬(`monthly/deep_check.py`)、AI 內容判讀。
+
+**分級執行**：基本合規（HTTPS/RWD/檢索/無障礙）466 站都做（成本近零）；AI 判讀 + deep_check 只做「合規檢核=是」的站。
+
+**產出**：報告目錄下的 `compliance.json`（各站合規結果），被 `update_excel.py` 讀取產 Excel 檢核表、被 `report_html.py` 讀取產合規檢核紅綠燈區塊。
 
 ### 4.4 engine 雙剖面（`run_all.py` / `scan.py`）
 

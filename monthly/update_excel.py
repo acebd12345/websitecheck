@@ -2,16 +2,17 @@
 """
 網站檢核表 Excel 自動更新
 
-流程: 先跑 monthly_check.py 產生檢測結果, 再跑本程式產生新月份的檢核表。
+流程: 深掃產出 compliance.json 後, 跑本程式產生新月份的檢核表。
 
 用法:
   python update_excel.py                     自動尋找上月檢核表, 產生本月新檔
   python update_excel.py --src <路徑.xlsx>   指定來源檔
+  python update_excel.py --rename-tabs       一次性：把舊分頁名（工作表名稱）改成網站名稱
   python update_excel.py --dry-run           只顯示會做什麼, 不寫檔
 
 動作:
   1. 複製上月檢核表 → 「{本月}資訊局網站檢核表（數據範圍{上月}01~{上月}月底）.xlsx」
-  2. 每張網站工作表:
+  2. 每張網站工作表(以「網站名稱」為鍵):
      - 填表日期(E2) 更新為今天
      - 流量數(E4) 保留上月數字並標黃 → 待人工填入新數據
      - (二)檢索/(三)HTTPS/(四)RWD: 與自動檢測結果比對
@@ -31,6 +32,8 @@ import openpyxl
 from openpyxl.styles import PatternFill
 
 import config
+
+FULL_OVERNIGHT_GLOB = os.path.join(config.PRIVATE_DIR, "reports", "full_overnight_*")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 YELLOW = PatternFill("solid", start_color="FFFF00")
@@ -101,6 +104,50 @@ def site_detection(res):
     return out
 
 
+def find_compliance_json():
+    """找最新深掃目錄的 compliance.json。"""
+    dirs = sorted(glob.glob(FULL_OVERNIGHT_GLOB), reverse=True)
+    for d in dirs:
+        p = os.path.join(d, "compliance.json")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _sanitize_tab_name(name, max_len=31):
+    """Excel 分頁名限 31 字、不可含 \\/:*?[]。"""
+    name = re.sub(r'[\\/:*?\[\]]', '_', name).strip()
+    return name[:max_len] if name else "_"
+
+
+def rename_tabs(wb, dry=False):
+    """一次性：把舊分頁名（工作表名稱）改成對應的網站名稱。
+    對照優先讀 sites.json 的 sheet 欄；該欄已隨主設定表退役(新 sync 後為空)，
+    故備援讀重構時固化的 private/tab_rename_map.json。"""
+    mapping = {}
+    if os.path.exists(config.SITES_JSON):
+        with open(config.SITES_JSON, encoding="utf-8") as f:
+            mapping = {s["sheet"]: s["name"] for s in json.load(f)["sites"]
+                       if s.get("sheet") and s.get("name")}
+    if not mapping:
+        snap = os.path.join(config.PRIVATE_DIR, "tab_rename_map.json")
+        if os.path.exists(snap):
+            mapping = json.load(open(snap, encoding="utf-8"))
+    if not mapping:
+        print("  (略過分頁改名：sites.json 無 sheet 欄且無 tab_rename_map.json)")
+        return []
+    renamed = []
+    for old_name in list(wb.sheetnames):
+        if old_name in mapping:
+            new_name = _sanitize_tab_name(mapping[old_name])
+            if new_name != old_name and new_name not in wb.sheetnames:
+                if not dry:
+                    wb[old_name].title = new_name
+                renamed.append((old_name, new_name))
+                print(f"  分頁改名: {old_name} → {new_name}")
+    return renamed
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:]
@@ -108,13 +155,16 @@ def main():
     src = args[args.index("--src") + 1] if "--src" in args else find_src()
 
     this_m, data_m, d_from, d_to = months()
-    result_path = os.path.join(config.REPORTS_DIR, f"result_{data_m}.json")
-    if not os.path.exists(result_path):
-        sys.exit(f"找不到 {result_path}\n請先執行: python monthly_check.py")
-    with open(result_path, encoding="utf-8") as f:
-        results = {r["sheet"]: r for r in json.load(f)}
+
+    # 讀合規結果（來自深掃 compliance.json，以網站名稱為鍵）
+    comp_path = find_compliance_json()
+    if not comp_path:
+        sys.exit("找不到 compliance.json\n請先執行深掃: python -m engine.full_overnight")
+    print(f"合規數據: {comp_path}")
+    with open(comp_path, encoding="utf-8") as f:
+        results = json.load(f)   # {網站名稱: {urls:{...}, ai:[...]}}
     with open(config.SITES_JSON, encoding="utf-8") as f:
-        site_cfg = {s["sheet"]: s for s in json.load(f)["sites"]}
+        site_cfg = {s["name"]: s for s in json.load(f)["sites"]}
 
     out_name = f"{this_m}資訊局網站檢核表（數據範圍{d_from}~{d_to}）.xlsx"
     # 比照 Drive 結構：本機輸出放「檢核表/<民國年>年/」資料夾
@@ -124,16 +174,20 @@ def main():
     print(f"來源: {src}\n輸出: {out_path}\n檢測數據: {result_path}\n")
 
     wb = openpyxl.load_workbook(src)
+    # 一次性分頁改名（--rename-tabs 或首次偵測到舊名時自動執行）
+    if "--rename-tabs" in args:
+        rename_tabs(wb, dry=dry)
+
     y, m, d = roc_today()
     todo = [f"# {this_m} 檢核表 待人工確認清單", "",
             f"產生時間：{datetime.datetime.now():%Y-%m-%d %H:%M}",
             f"已自動更新：各表填表日期 → {y} 年 {m} 月 {d} 日", ""]
 
-    for sheet, res in results.items():
-        if sheet not in wb.sheetnames:
-            todo.append(f"## {sheet}\n- ⚠ 工作表不存在於來源檔，請確認")
+    for site_name, res in results.items():
+        if site_name not in wb.sheetnames:
+            todo.append(f"## {site_name}\n- ⚠ 工作表不存在於來源檔，請確認")
             continue
-        ws = wb[sheet]
+        ws = wb[site_name]
         items = []
 
         # 1. 填表日期
@@ -143,30 +197,21 @@ def main():
         if not dry:
             ws["E2"] = new_e2
 
-        # 1b. 表頭聯絡資訊以「府內網站表」為準 (填表人A5/分機B5/EmailE5/網站名稱B2)
-        cfg = site_cfg.get(sheet, {})
-        for cell, prefix, key in [("B2", "網站名稱：", "name"), ("A5", "填表人姓名：", "person"),
-                                  ("E5", "E-mail：", "email")]:
-            val = str(cfg.get(key, "") or "").strip()
-            if val:
-                old = str(ws[cell].value or "")
-                newv = prefix + val
-                if old != newv:
-                    if not dry:
-                        ws[cell] = newv
-                    if key in ("person", "email"):
-                        items.append(f"- 🔄 {cell} {prefix.rstrip('：')}已依府內網站表更新為「{val}」")
-        ext = str(cfg.get("ext", "") or "").strip()
-        if ext and not dry:
-            b5 = str(ws["B5"].value or "")
-            ws["B5"] = re.sub(r"(電話：).*", r"\g<1>#" + ext, b5) if "電話" in b5 else f"電話：#{ext}"
+        # 1b. 表頭網站名稱
+        cfg = site_cfg.get(site_name, {})
+        b2_val = str(cfg.get("name", "") or "").strip()
+        if b2_val:
+            old = str(ws["B2"].value or "")
+            newv = "網站名稱：" + b2_val
+            if old != newv and not dry:
+                ws["B2"] = newv
 
         # 2. 流量數: 有設定 GA 資源者自動撈取, 其餘標黃人工填
-        ga_pid = site_cfg.get(sheet, {}).get("ga_property")
+        ga_pid = cfg.get("ga_property")
         traffic_done = False
         if ga_pid:
             import ga_traffic
-            ga_metric = site_cfg.get(sheet, {}).get("ga_metric", "screenPageViews")
+            ga_metric = cfg.get("ga_metric", "screenPageViews")
             start, end = ga_traffic.roc_month_range(data_m)
             n, err = ga_traffic.fetch_pageviews(ga_pid, start, end, ga_metric)
             if err is None:
@@ -210,15 +255,8 @@ def main():
         for b in det["broken"]:
             items.append(f"- ❌ 失效連結：{b}（影響(一)超連結有效性）")
 
-        # 4b. link_audit 全站深度稽核結果
+        # 4b. 站內深度檢測結果（來自 compliance deep_check）
         for _url, _r in res.get("urls", {}).items():
-            la = _r.get("link_audit")
-            if la is None:
-                items.append(f"- ⚠ {_url} 尚未被 link_audit 全站掃描，請確認每日排程")
-            elif la["counts"]:
-                cnt = "、".join(f"{k} {v}筆" for k, v in la["counts"].items())
-                items.append(f"- 🔍 全站稽核（{la['scan_date']}）異常：{cnt}"
-                             f"（嚴重項見檢測報告，影響(一)超連結有效性）")
             deep = _r.get("deep") or {}
             if deep.get("broken_internal"):
                 bi = deep["broken_internal"]
@@ -241,7 +279,7 @@ def main():
             ans = ai["answer"].replace("\n", " ")[:120]
             items.append(f"- 🤖 AI判讀 {ai['url']}：{ans}")
 
-        todo += [f"## {sheet}：{res['name']}"] + items + [""]
+        todo += [f"## {site_name}"] + items + [""]
 
     if not dry:
         wb.save(out_path)

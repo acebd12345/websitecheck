@@ -141,7 +141,8 @@ def match_node(name, anchors):
 def build_map(xlsx_path):
     with open(config.SITES_JSON, encoding="utf-8") as f:
         sites = json.load(f)["sites"]
-    sheet_urls = {s["sheet"]: s["urls"][0] for s in sites}
+    # 鍵改用網站名稱(工作表名稱欄已隨主設定表退役;檢核表分頁 --rename-tabs 後即為網站名稱)
+    sheet_urls = {s["name"]: s["urls"][0] for s in sites}
     nodes_by_sheet = extract_nodes(xlsx_path, list(sheet_urls))
     result = {}
     for sheet, nodes in nodes_by_sheet.items():
@@ -178,7 +179,7 @@ def run_check(month, sheet_filter=None):
     methods = {}
     sp = config.SITES_JSON
     if os.path.exists(sp):
-        methods = {s["sheet"]: s.get("method", "ai") for s in json.load(open(sp, encoding="utf-8"))["sites"]}
+        methods = {s["name"]: s.get("method", "ai") for s in json.load(open(sp, encoding="utf-8"))["sites"]}
     escalate = []  # 建議升級成 playwright 的站
     lines = [f"# {month} 檢核表(一) 逐節點 AI 內容判讀", ""]
     total = sum(len(v) for v in node_map.values())

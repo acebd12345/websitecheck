@@ -364,12 +364,92 @@ def _locations_html(all_locations_str):
     return f'<div class="occ"><ul>{items}{extra}</ul></div>'
 
 
-def generate_site_report(site_url, site_info, verified, out_dir, used_names=None):
+def _compliance_section(comp_data):
+    """產生合規檢核 HTML 區塊（紅綠燈表格）。"""
+    if not comp_data:
+        return ""
+    items = []
+    for url, r in comp_data.get("urls", {}).items():
+        https = r.get("https", {})
+        cert = https.get("cert", {})
+        rwd = r.get("rwd", {})
+        acc = r.get("accessibility", {})
+
+        items.append(("HTTPS 憑證有效",
+                      cert.get("valid"),
+                      f"有效至 {cert.get('expires', '?')}（剩 {cert.get('days_left', '?')} 天）"
+                      if cert.get("valid") else (cert.get("error") or "")))
+        items.append(("HTTP→HTTPS 轉址", https.get("redirect_to_https"), ""))
+        items.append(("HSTS", https.get("hsts"), ""))
+        rwd_ok = rwd.get("viewport") and rwd.get("responsive_css") if rwd else None
+        items.append(("RWD 響應式設計", rwd_ok,
+                      f"viewport {'○' if rwd.get('viewport') else '✕'}"
+                      f"／響應式CSS {'○' if rwd.get('responsive_css') else '✕'}"
+                      if rwd else ""))
+        items.append(("站內搜尋功能", r.get("search"), "啟發式偵測"))
+        if acc.get("badge_active"):
+            items.append(("無障礙標章", True, acc.get("detail", "")))
+        elif acc.get("badge_in_comment"):
+            items.append(("無障礙標章", None, "標章程式碼存在但被註解"))
+        else:
+            items.append(("無障礙標章", False, ""))
+        broken = r.get("links_broken", [])
+        lt = r.get("links_total", 0)
+        items.append(("首頁連結有效",
+                      len(broken) == 0 if lt > 0 else None,
+                      f"檢測 {r.get('links_checked', 0)}/{lt} 條，失效 {len(broken)} 條"))
+        deep = r.get("deep")
+        if deep and "error" not in deep:
+            bi = deep.get("broken_internal", [])
+            ou = deep.get("office_no_universal", [])
+            items.append(("站內失效連結", len(bi) == 0,
+                          f"爬 {deep.get('pages', 0)} 頁，失效 {len(bi)} 筆"))
+            items.append(("下載文件通用格式", len(ou) == 0,
+                          f"Office 缺 PDF/ODF {len(ou)} 筆"))
+
+    ai_results = comp_data.get("ai", [])
+
+    rows_html = []
+    for label, ok, detail in items:
+        if ok is True:
+            icon, color = "🟢", "#0f766e"
+        elif ok is False:
+            icon, color = "🔴", "#b91c1c"
+        else:
+            icon, color = "🟡", "#b45309"
+        rows_html.append(
+            f"<tr><td style='color:{color};font-weight:bold;text-align:center'>"
+            f"{icon}</td><td>{_h(label)}</td><td>{_h(detail)}</td></tr>")
+
+    ai_html = ""
+    if ai_results:
+        ai_parts = []
+        for ar in ai_results:
+            ai_parts.append(
+                f"<tr><td><a href='{_h(ar['url'])}' target='_blank'>"
+                f"{_h(ar['url'][:50])}</a></td>"
+                f"<td>{_h(ar['question'])}</td>"
+                f"<td>{_h(ar['answer'][:200])}</td></tr>")
+        ai_html = (
+            "<h3 style='font-size:14px;margin:16px 0 6px'>AI 內容判讀</h3>"
+            "<table><tr><th>頁面</th><th>題目</th><th>AI 回覆</th></tr>"
+            + "\n".join(ai_parts) + "</table>")
+
+    return (
+        '<h2>合規檢核</h2>'
+        '<table><tr><th style="width:30px"></th><th>項目</th><th>說明</th></tr>'
+        + "\n".join(rows_html) + '</table>'
+        + ai_html)
+
+
+def generate_site_report(site_url, site_info, verified, out_dir,
+                         used_names=None, compliance=None):
     """產生單站報告 HTML，回傳輸出路徑。
 
     Args:
         used_names: 本輪已用名稱集合 {(org_dir_name, fname)}，用於同輪重名偵測。
                     傳 None 時不做重名偵測（同站重產直接覆蓋）。
+        compliance: 該站的合規檢核資料（來自 compliance.json）。
     """
     name = site_info.get("name", "")
     org = site_info.get("org", "") or "其他"
@@ -411,6 +491,9 @@ def generate_site_report(site_url, site_info, verified, out_dir, used_names=None
     else:
         detail_table = '<p class="ok" style="color:#0f766e">本站無異常連結。</p>'
 
+    # 合規檢核區塊
+    compliance_html = _compliance_section(compliance) if compliance else ""
+
     # 附錄：已排除誤報
     appendix = ""
     if excluded_rows:
@@ -446,6 +529,8 @@ def generate_site_report(site_url, site_info, verified, out_dir, used_names=None
 
 <h2>二、異常連結明細</h2>
 {detail_table}
+
+{compliance_html}
 
 {appendix}
 
@@ -762,6 +847,22 @@ def load_site_list_for_context():
 
 # ── 公開 API（供 full_overnight 掛接）──
 
+def _load_compliance():
+    """載入所有 full_overnight 目錄的 compliance.json，新目錄覆蓋舊目錄。"""
+    compliance = {}
+    for d in sorted(glob.glob(FULL_OVERNIGHT_GLOB)):
+        cpath = os.path.join(d, "compliance.json")
+        if not os.path.exists(cpath):
+            continue
+        try:
+            data = json.load(open(cpath, encoding="utf-8"))
+            for name, info in data.items():
+                compliance[name] = info
+        except Exception:
+            pass
+    return compliance
+
+
 def generate_for_sites(site_urls, sites_data=None, verified=None):
     """對指定站產單站報告（供 full_overnight 收尾呼叫）。
 
@@ -778,6 +879,7 @@ def generate_for_sites(site_urls, sites_data=None, verified=None):
             sites_data = _sites
         if verified is None:
             verified = _load_all_verified()
+    compliance = _load_compliance()
     out_dir = REPORTS_HTML_DIR
     used_names = set()
     paths = []
@@ -785,7 +887,10 @@ def generate_for_sites(site_urls, sites_data=None, verified=None):
         info = sites_data.get(url)
         if not info:
             continue
-        p = generate_site_report(url, info, verified, out_dir, used_names)
+        name = info.get("name", "")
+        comp = compliance.get(name)
+        p = generate_site_report(url, info, verified, out_dir, used_names,
+                                 compliance=comp)
         paths.append(p)
     return paths
 
@@ -829,12 +934,19 @@ def main():
         target_sites = {u: s for u, s in target_sites.items()
                         if s.get("org", "") == args.org}
 
+    # 合規資料
+    compliance = _load_compliance()
+    print(f"  合規: {len(compliance)} 站有合規資料", flush=True)
+
     # 單站報告
     used_names = set()
     if not args.city:
         print(f"\n[report_html] 產生單站報告: {len(target_sites)} 站...", flush=True)
         for url, info in target_sites.items():
-            p = generate_site_report(url, info, verified, out_dir, used_names)
+            name = info.get("name", "")
+            comp = compliance.get(name)
+            p = generate_site_report(url, info, verified, out_dir, used_names,
+                                     compliance=comp)
             generated.append(p)
             name = info.get("name", "")[:20]
             print(f"  ✓ {name}", flush=True)
