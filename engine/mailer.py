@@ -6,6 +6,7 @@
   - SUSPICIOUS 且 AI 判 C(誤報) → 不列入信
   - SUSPICIOUS 且 AI 判 ?(待人工) → 列在信末「待人工確認」區，不當警報
   - 一個局處若複查後 0 條真問題 → 不寄
+  - 附件：異常明細 CSV ＋ 信件彙整 HTML 轉 PDF（playwright，未裝則只附 CSV）
   - 收件人：各局處在府內網站表「局處Email」欄的真值（per-局處）
     此欄可含多個承辦信箱（逗號/分號分隔）→ 全部都寄
   - --mail-to 為可選 override（給了才蓋全部收件人，測試用）
@@ -250,7 +251,38 @@ def parse_recipients(to):
     return out
 
 
-def send_outlook(to, subject, html_body, attachment):
+def _attach_list(attachments):
+    """把附件參數（單一路徑或路徑 list）正規化成「存在的檔案」list。"""
+    if not attachments:
+        return []
+    if isinstance(attachments, (str, bytes)):
+        attachments = [attachments]
+    return [a for a in attachments if a and os.path.exists(a)]
+
+
+def html_to_pdf(html, pdf_path):
+    """用 playwright(chromium) 把 HTML 內文轉 PDF。
+    未裝 playwright 或轉檔失敗 → 回 None（只警告、不阻斷寄信）。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  ⚠ 未裝 playwright,略過 PDF 附件（CSV 仍會附）")
+        return None
+    try:
+        with sync_playwright() as p:
+            b = p.chromium.launch()
+            pg = b.new_page()
+            pg.set_content(html, wait_until="networkidle")
+            pg.pdf(path=pdf_path, format="A4", print_background=True,
+                   margin={"top": "12mm", "bottom": "12mm", "left": "10mm", "right": "10mm"})
+            b.close()
+        return pdf_path
+    except Exception as e:
+        print(f"  ⚠ PDF 轉檔失敗({type(e).__name__}),略過 PDF 附件（CSV 仍會附）")
+        return None
+
+
+def send_outlook(to, subject, html_body, attachments=None):
     import win32com.client
     addrs = parse_recipients(to)
     if not addrs:
@@ -261,8 +293,8 @@ def send_outlook(to, subject, html_body, attachment):
     mail.To = to
     mail.Subject = subject
     mail.HTMLBody = html_body
-    if attachment and os.path.exists(attachment):
-        mail.Attachments.Add(os.path.abspath(attachment))
+    for att in _attach_list(attachments):
+        mail.Attachments.Add(os.path.abspath(att))
     try:
         mail.Send()
         print(f"  已寄出(outlook): {to}")
@@ -272,7 +304,7 @@ def send_outlook(to, subject, html_body, attachment):
         print(f"  已開草稿(outlook 安全性阻擋自動寄出): {to}")
 
 
-def send_gmail(cfg, to, subject, html_body, attachment):
+def send_gmail(cfg, to, subject, html_body, attachments=None):
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -288,10 +320,12 @@ def send_gmail(cfg, to, subject, html_body, attachment):
     msg["To"] = ", ".join(addrs)  # 郵件標頭以逗號分隔
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    if attachment and os.path.exists(attachment):
-        with open(attachment, "rb") as f:
-            part = MIMEApplication(f.read(), Name=os.path.basename(attachment))
-        part["Content-Disposition"] = f'attachment; filename="{os.path.basename(attachment)}"'
+    for att in _attach_list(attachments):
+        name = os.path.basename(att)
+        subtype = "pdf" if name.lower().endswith(".pdf") else "octet-stream"
+        with open(att, "rb") as f:
+            part = MIMEApplication(f.read(), _subtype=subtype, Name=name)
+        part["Content-Disposition"] = f'attachment; filename="{name}"'
         msg.attach(part)
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
         s.starttls()
@@ -300,13 +334,13 @@ def send_gmail(cfg, to, subject, html_body, attachment):
     print(f"  已寄出(gmail): {', '.join(addrs)}")
 
 
-def send_mail(to, subject, html_body, attachment):
+def send_mail(to, subject, html_body, attachments=None):
     cfg = _load_mail_config()
     method = cfg.get("mail", "method", fallback="outlook").strip().lower()
     if method == "gmail":
-        send_gmail(cfg, to, subject, html_body, attachment)
+        send_gmail(cfg, to, subject, html_body, attachments)
     else:
-        send_outlook(to, subject, html_body, attachment)
+        send_outlook(to, subject, html_body, attachments)
 
 
 # ── 主流程 ──
@@ -378,12 +412,14 @@ def run(outdir, mail_to=None, dry_run=False):
                 print(f"            - [{p['risk']}]{vtag} {p['url'][:60]}")
             continue
 
-        # 寫附件
-        csv_path = os.path.join(outdir, f"mail_{org.replace(' ', '_')}.csv")
-        csv_path = write_org_csv(problems, csv_path)
+        # 寫附件：異常明細 CSV + 信件彙整 HTML 轉 PDF
+        base = os.path.join(outdir, f"mail_{org.replace(' ', '_')}")
+        csv_path = write_org_csv(problems, base + ".csv")
+        pdf_path = html_to_pdf(body, base + ".pdf")
+        attachments = [csv_path] + ([pdf_path] if pdf_path else [])
 
         try:
-            send_mail(to, subject, body, csv_path)
+            send_mail(to, subject, body, attachments)
             sent += 1
         except Exception as e:
             print(f"  !! [{org}] 寄信失敗: {e}")
