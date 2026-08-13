@@ -7,6 +7,7 @@
   - SUSPICIOUS 且 AI 判 ?(待人工) → 列在信末「待人工確認」區，不當警報
   - 一個局處若複查後 0 條真問題 → 不寄
   - 收件人：各局處在府內網站表「局處Email」欄的真值（per-局處）
+    此欄可含多個承辦信箱（逗號/分號分隔）→ 全部都寄
   - --mail-to 為可選 override（給了才蓋全部收件人，測試用）
   - 查無 Email → fallback config mail_override_to → 兩者皆無跳過並警告
 
@@ -19,7 +20,7 @@
   python -m engine.mailer <報告目錄> --mail-to someone@example.com   # override 測試
   python -m engine.mailer <報告目錄> --dry-run   # 不寄，只印彙整結果
 """
-import argparse, configparser, csv, datetime, html, json, os, sys
+import argparse, configparser, csv, datetime, html, json, os, re, sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -237,8 +238,24 @@ def _load_mail_config():
     return cfg
 
 
+def parse_recipients(to):
+    """把可能含逗號/分號的收件字串拆成乾淨、去重的 email list（保序）。"""
+    parts = to if isinstance(to, (list, tuple)) else re.split(r"[,;]", to or "")
+    seen, out = set(), []
+    for p in parts:
+        e = (p or "").strip()
+        if e and "@" in e and e.lower() not in seen:
+            seen.add(e.lower())
+            out.append(e)
+    return out
+
+
 def send_outlook(to, subject, html_body, attachment):
     import win32com.client
+    addrs = parse_recipients(to)
+    if not addrs:
+        raise ValueError(f"無有效收件人: {to!r}")
+    to = "; ".join(addrs)  # Outlook 收件人以分號分隔
     outlook = win32com.client.Dispatch("Outlook.Application")
     mail = outlook.CreateItem(0)
     mail.To = to
@@ -263,9 +280,12 @@ def send_gmail(cfg, to, subject, html_body, attachment):
 
     user = cfg.get("gmail", "user")
     pwd = cfg.get("gmail", "app_password")
+    addrs = parse_recipients(to)
+    if not addrs:
+        raise ValueError(f"無有效收件人: {to!r}")
     msg = MIMEMultipart()
     msg["From"] = user
-    msg["To"] = to
+    msg["To"] = ", ".join(addrs)  # 郵件標頭以逗號分隔
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     if attachment and os.path.exists(attachment):
@@ -276,8 +296,8 @@ def send_gmail(cfg, to, subject, html_body, attachment):
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
         s.starttls()
         s.login(user, pwd)
-        s.send_message(msg, to_addrs=[to])
-    print(f"  已寄出(gmail): {to}")
+        s.send_message(msg, to_addrs=addrs)  # 逐一送給每個承辦
+    print(f"  已寄出(gmail): {', '.join(addrs)}")
 
 
 def send_mail(to, subject, html_body, attachment):
