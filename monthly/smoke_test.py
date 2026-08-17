@@ -42,8 +42,12 @@ import config
 check("config.json 已設定(非範本佔位)", config.MASTER_SHEET_ID
       and "YOUR_" not in str(config.MASTER_SHEET_ID),
       "請複製 config.example.json → private/config.json 並填值")
-check("AI 端點已設定", config.AI_BASE_URL and "YOUR-" not in str(config.AI_BASE_URL),
-      "請在 private/config.json 填 ai_base_url")
+provider = (config.get("ai_provider", "openai") or "openai").lower()
+if provider in ("anthropic", "gemini"):
+    check("AI 端點已設定(非必填, 走官方 SDK/預設相容端點)", True)
+else:
+    check("AI 端點已設定", config.AI_BASE_URL and "YOUR_" not in str(config.AI_BASE_URL),
+          "請在 private/config.json 填 ai_base_url")
 check("GA 金鑰檔存在", os.path.exists(config.GA_KEY_FILE),
       f"請放置金鑰於 {config.GA_KEY_FILE}")
 check("private/ 資料夾存在", os.path.isdir(config.PRIVATE_DIR))
