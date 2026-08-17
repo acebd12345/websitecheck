@@ -116,96 +116,115 @@ def group_by_org(allp, verified, progress):
 
 # ── 信件建構 ──
 
+FEEDBACK_URL = "(待建)"   # GAS 回饋頁 URL，建好後填
+
+
+def classify_cause(p):
+    """把一條問題分流成 (bucket, 成因標籤)。bucket ∈ act(需處理)/update(建議更新)/ref(參考誤報)。
+    只信地端 AI 對 SUSPICIOUS 的判定；連線逾時多為境外掃描地緣誤判，降為參考。"""
+    risk = p.get("risk", ""); note = p.get("note", ""); verdict = p.get("_verdict", "")
+    if risk == "SUSPICIOUS":
+        # C(誤報)已在 group_by_org 濾掉;剩 A/B(真)或 ?(未複查成功)一律當需確認,不可當誤報
+        if verdict in ("A", "B"):
+            return ("act", "疑遭搶註／掛不當內容(AI 判定真,請確認移除)")
+        return ("act", "命中可疑關鍵字,待確認(未能複查,請人工檢視)")
+    if risk == "REDIRECTED":
+        return ("update", "連結已跳轉,建議更新為新網址")
+    if risk == "DEAD":
+        if "釋出" in note or "留意被搶註" in note:
+            return ("act", "外部網域已釋出(搶註風險,請確認移除)")
+        if "政府專屬" in note or "無搶註" in note:
+            return ("ref", "政府服務網域下線(非搶註風險)")
+        return ("ref", "連線逾時(多為境外掃描誤判或暫時性)")
+    if risk == "BROKEN":
+        if "403" in note or "429" in note:
+            return ("ref", "對方網站阻擋自動檢測(擋爬蟲,通常正常)")
+        if "404" in note:
+            return ("act", "目標頁 404,連結失效")
+        return ("ref", "HTTP 狀態異常")
+    if risk == "WARN":
+        return ("ref", "SSL 憑證問題")
+    return ("ref", "其他")
+
+
+def _triage(problems):
+    """回傳 (act, update, ref) 三桶,每條附 _cause。"""
+    act, update, ref = [], [], []
+    for p in problems:
+        b, label = classify_cause(p)
+        q = dict(p); q["_cause"] = label
+        (act if b == "act" else update if b == "update" else ref).append(q)
+    for lst in (act, update, ref):
+        lst.sort(key=lambda r: (r.get("site_name", ""), r.get("url", "")))
+    return act, update, ref
+
+
 def build_mail_html(org, problems, stamp):
-    """建局處層級彙整信 HTML。"""
+    """建局處層級彙整信 HTML(成因分流:需處理先行、誤報收摺)。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
+    act, update, ref = _triage(problems)
 
-    # 分兩類：確認問題 vs 待人工
-    confirmed = [p for p in problems if not p.get("_pending_human")]
-    pending = [p for p in problems if p.get("_pending_human")]
-    confirmed.sort(key=lambda r: (RISK_ORDER.get(r.get("risk", ""), 9), r.get("url", "")))
-    pending.sort(key=lambda r: r.get("url", ""))
+    def n_pages(p):
+        loc = p.get("all_locations", "")
+        return len([l for l in loc.splitlines() if l.strip()]) or 1
 
-    n_total = len(confirmed)
-    n_susp = sum(1 for p in confirmed if p["risk"] == "SUSPICIOUS")
-    has_urgent = any(p.get("_verdict") == "A" for p in confirmed)
+    def line(p):
+        return (f"<li><b style='color:#c00000'>{html.escape(p['_cause'])}</b> — "
+                f"{html.escape(p['url'])}"
+                f"<br><span style='font-size:9pt;color:#666'>出現在 {n_pages(p)} 個頁面;"
+                f"站:{html.escape(p.get('site_name',''))};狀況:{html.escape(p.get('note',''))}</span></li>")
 
-    if has_urgent:
-        alert = (f"<p style='color:#c00000;font-weight:bold'>⚠ 發現 {n_susp} 筆疑似遭"
-                 f"搶註/導向不當內容之連結,請優先處理!</p>")
-    elif n_total == 0 and not pending:
-        alert = "<p style='color:#107c10;font-weight:bold'>本次掃描未發現異常連結。</p>"
+    P = []
+    P.append("<p>您好:</p>")
+    P.append(f"<p>依數發部 115/6/8「委外案或活動結束後未移除網址」清查,{today} 對 "
+             f"<b>{html.escape(org)}</b> 所管網站自動深度掃描(含 AI 複查),結果如下。</p>")
+    # 摘要
+    P.append("<p><b>■ 摘要</b></p><ul style='font-size:10pt'>")
+    P.append(f"<li><b style='color:#c00000'>需貴處處理或確認:{len(act)} 筆</b></li>")
+    if update:
+        P.append(f"<li>建議更新連結(已跳轉):{len(update)} 筆</li>")
+    P.append(f"<li>系統偵測、多屬誤報(僅供參考):{len(ref)} 筆</li></ul>")
+    # 需處理
+    P.append("<p><b>■ 需要貴處處理或確認</b></p>")
+    if act:
+        P.append("<ul style='font-size:10pt'>" + "".join(line(p) for p in act) + "</ul>")
     else:
-        alert = ""
-
-    # 按站分組
-    site_problems = {}
-    for p in confirmed:
-        site = p.get("site_name", "") or "未知站"
-        site_problems.setdefault(site, []).append(p)
-
-    detail_section = ""
-    if confirmed:
-        blocks = []
-        for site, probs in site_problems.items():
-            blocks.append(f"<h4 style='font-size:11pt;margin:14px 0 4px 0'>{html.escape(site)}</h4>")
-            for p in probs:
-                color = RISK_COLOR.get(p["risk"], "#000")
-                verdict_tag = ""
-                if p.get("_verdict") in ("A", "B"):
-                    verdict_tag = f" <b style='color:#c00000'>[AI判定:{p['_verdict']}]</b>"
-                locs = ""
-                if p.get("all_locations"):
-                    locs_items = "".join(
-                        f"<li>{html.escape(line)}</li>"
-                        for line in p["all_locations"].splitlines() if line.strip())
-                    locs = f"<ul style='font-size:9pt;margin:0 0 6px 18px'>{locs_items}</ul>"
-                blocks.append(
-                    f"<p style='margin:10px 0 2px 0'>"
-                    f"<b style='color:{color}'>[{p['risk']}]</b> "
-                    f"{html.escape(p['url'])}{verdict_tag}<br>"
-                    f"<span style='font-size:9pt'>狀況:{html.escape(p.get('note', ''))}</span></p>"
-                    f"{locs}")
-        detail_section = (f"<h3 style='font-size:11pt'>異常明細(共 {n_total} 筆,"
-                          f"完整資料見附件 CSV)</h3>" + "".join(blocks))
-
-    pending_section = ""
-    if pending:
-        pblocks = []
-        for p in pending:
-            pblocks.append(
-                f"<li>{html.escape(p['url'])} — {html.escape(p.get('note', ''))}"
-                f"<br><span style='font-size:9pt;color:#808080'>AI:{html.escape(p.get('_ai_reason', ''))}</span></li>")
-        pending_section = (f"<h3 style='font-size:11pt;color:#808080'>待人工確認"
-                           f"({len(pending)} 筆,非警報)</h3>"
-                           f"<ul style='font-size:10pt'>{''.join(pblocks)}</ul>")
-
-    return f"""
-<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt'>
-<p>您好:</p>
-<p>依數發部 115/6/8 通知辦理「委外案或活動結束後未移除網址」清查,
-{today} 對 <b>{html.escape(org)}</b> 所管網站自動深度掃描(含 AI 複查)結果如下:</p>
-{alert}
-<ul style='font-size:10pt'>
-<li>異常連結:{n_total} 筆(正常項目不列出)</li>
-</ul>
-{detail_section}
-{pending_section}
-<p style='font-size:9pt;color:#808080'>本郵件由連結稽核工具自動產生(經 AI 複查過濾誤報後)。
-異常分類說明:{" / ".join(f"{k}={v}" for k, v in RISK_LABEL.items())}</p>
-</div>"""
+        P.append("<p style='color:#107c10'>本次沒有需要貴處處理的連結 👍</p>")
+    # 建議更新(跳轉)
+    if update:
+        P.append("<p><b>■ 已跳轉,建議把連結更新為新網址</b></p><ul style='font-size:10pt'>")
+        for p in update:
+            fin = p.get("final_url", "") or ""
+            P.append(f"<li>{html.escape(p['url'])}<br>→ 建議改為:"
+                     f"<b>{html.escape(fin)}</b></li>")
+        P.append("</ul>")
+    # 參考(誤報,收摺)
+    if ref:
+        P.append(f"<p><b>■ 系統偵測到、但多屬誤報({len(ref)} 筆,無需回報)</b></p>")
+        P.append("<p style='font-size:9pt;color:#666'>多為對方網站阻擋自動檢測、或境外掃描連線逾時,"
+                 "連結對一般使用者通常正常。完整清單見附件。</p>")
+        P.append("<ul style='font-size:9pt;color:#666'>" + "".join(line(p) for p in ref[:25]) + "</ul>")
+        if len(ref) > 25:
+            P.append(f"<p style='font-size:9pt;color:#666'>…另有 {len(ref)-25} 筆,詳見附件 CSV。</p>")
+    # 如何回覆
+    P.append("<p><b>■ 如何回覆(選用)</b></p><ul style='font-size:10pt'>")
+    P.append("<li>連結<b>已移除或下架者無需回報</b>——下一輪掃描(約一個月內)就不會再出現。</li>")
+    P.append(f"<li>若認為屬<b>誤報／處理中／無法處理</b>,請至回饋頁填寫,並輸入貴處專屬 "
+             f"<b>PIN 碼</b>(另以專信寄送):<br>🔗 回饋頁:{FEEDBACK_URL}</li></ul>")
+    P.append("<p style='font-size:9pt;color:#808080'>本郵件由連結稽核工具自動產生"
+             "(可疑內容類已經 AI 讀全文複查)。完整明細見附件 CSV/PDF。</p>")
+    return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt'>{''.join(P)}</div>"
 
 
 def make_subject(org, problems, stamp):
-    """產主旨。"""
+    """產主旨:以「需處理幾筆」為主軸,有 AI 判 A 的加【急】。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
-    confirmed = [p for p in problems if not p.get("_pending_human")]
-    n_total = len(confirmed)
-    n_susp = sum(1 for p in confirmed if p["risk"] == "SUSPICIOUS")
-    has_urgent = any(p.get("_verdict") == "A" for p in confirmed)
-
-    subject = f"網站對外連結深度稽核結果 - {org} {today}"
-    subject += f"(異常 {n_total} 筆" + (f",可疑 {n_susp} 筆!)" if n_susp else ")")
+    act, _u, _r = _triage(problems)
+    has_urgent = any(p.get("_verdict") == "A" for p in act)
+    if act:
+        subject = f"網站對外連結稽核結果 - {org} {today}(需處理 {len(act)} 筆)"
+    else:
+        subject = f"網站對外連結稽核結果 - {org} {today}(本次無需處理)"
     if has_urgent:
         subject = "【急】" + subject
     return subject
