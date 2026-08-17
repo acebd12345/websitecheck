@@ -236,9 +236,9 @@ def main():
             n_ok = sum(1 for p in prior_prog if p.get("status") == "ok")
             print(f"[續跑] 先前已完成 {n_ok} 站(含跳過共 {len(done_urls)}),將跳過續跑\n", flush=True)
 
-        scan = config._cfg.get("scan", {})
-        whitelist = tuple(w.strip().lower() for w in str(scan.get("content_whitelist","")).split(",") if w.strip())
-        skip_hosts = tuple(w.strip().lower() for w in str(scan.get("skip_hosts","")).split(",") if w.strip())
+        # 白名單/免檢名單:單一來源 = Sheet「掃描設定」分頁(scan_settings,啟動時已 refresh)
+        whitelist = tuple(w.strip().lower() for w in scan_settings.get("content_whitelist") if w.strip())
+        skip_hosts = tuple(w.strip().lower() for w in scan_settings.get("skip_hosts") if w.strip())
 
         rows = list(csv.DictReader(open(CSV_LIST, encoding="utf-8-sig")))
         # 每列多抓合規旗標 + AI判讀題目(合規AI在階段1後串行跑)

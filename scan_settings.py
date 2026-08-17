@@ -50,6 +50,18 @@ DEFAULTS = {
         "page", "pagesize", "offset", "limit", "start", "count", "p", "pn",
         "pageindex", "pageno", "cid", "date", "month", "year", "yy", "mm",
     ],
+    # 白名單:跳過關鍵字檢查、仍驗存活(已人工確認內容無虞的網域)
+    "content_whitelist": [
+        "porkbun.com", "cndns.com", "comlaude.com", "domaine.fr", "gname.com",
+        "instra.com", "uniteddomains.com", "wifi.taipei", "net-chinese.com.tw",
+        "rti.org.tw", "taiwantrade.com", "bnext.com.tw", "buzzorange.com",
+        "denverpost.com", "travel.taipei", "news.pchome.com.tw",
+    ],
+    # 免檢名單:完全略過檢測、視為 OK(有防爬蟲、已人工確認正常的站)
+    "skip_hosts": [
+        "accessibility.moda.gov.tw", "pcc.gov.tw", "web.pcc.gov.tw",
+        "crazydomains.com", "twitter.com", "x.com", "www-ws.gov.taipei",
+    ],
 }
 
 _cache_mem = None  # 每行程讀一次快取檔
