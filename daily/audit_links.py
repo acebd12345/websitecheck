@@ -140,6 +140,16 @@ def norm_host(url):
         return ""
 
 
+# 合法主機名:每段字母數字/連字號、TLD 須為 2~24 個字母。擋畸形連結:
+#   http://https://...(源頁雙 scheme→host 變 "https")、www-ws.gov.taipei<UUID亂碼>(TLD 帶 hex/連字號)
+_HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
+
+
+def _valid_host(host):
+    host = (host or "").lower()
+    return host not in ("http", "https") and bool(_HOST_RE.match(host))
+
+
 def is_trusted(host):
     host = (host or "").lower()
     return host.endswith(TRUSTED_SUFFIXES)
@@ -210,8 +220,8 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
                     if not absu.lower().startswith(("http://", "https://")):
                         continue
                     host = norm_host(absu)
-                    if not host:
-                        continue
+                    if not _valid_host(host):
+                        continue  # 擋畸形 host(雙 scheme/亂碼 TLD),不進外連清單
                     if host == start_host:
                         if absu not in seen_pages and not _is_pagination_url(absu):
                             seen_pages.add(absu)
