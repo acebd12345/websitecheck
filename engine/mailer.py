@@ -116,43 +116,50 @@ def group_by_org(allp, verified, progress):
 
 # ── 信件建構 ──
 
-FEEDBACK_URL = "(待建)"   # GAS 回饋頁 URL，建好後填
+FEEDBACK_URL = config.get("feedback_url", "") or "(待建)"   # GAS 回饋頁 /exec，存 config(不進公開 repo)
 
 
 def classify_cause(p):
-    """回傳 (bucket, 狀態, 建議做法)。bucket ∈ act(確定需處理)/update(建議更新)/check(請貴處確認)。
-    原則:確定的才說確定;系統無法自動判定的一律「請貴處確認」,絕不臆測「誤報」。"""
-    risk = p.get("risk", ""); note = p.get("note", ""); verdict = p.get("_verdict", "")
+    """回傳 (bucket, 狀態, 建議, 風險)。bucket ∈ act(建議優先處理)/update(建議更新)/check(請人工確認)。
+    保留「系統偵測、人工確認」界線:可疑不直接斷定為惡意,不確定者請人工確認,不臆測誤報。"""
+    risk = p.get("risk", ""); note = p.get("note", "")
     if risk == "SUSPICIOUS":
-        # C(誤報)已在 group_by_org 濾掉;剩 A/B(AI判真)或 ?(未複查)一律列出,不臆測
-        if verdict in ("A", "B"):
-            return ("act", "AI 判定此連結連向賭博／色情／搶註內容", "請立即移除該連結")
-        return ("act", "偵測到可疑關鍵字,尚待人工確認", "請人工檢視該連結內容,確認後移除")
+        # C(誤報)已於 group_by_org 濾除;剩者一律列為需優先處理,但措辭保留人工確認空間
+        return ("act",
+                "系統偵測到可疑內容特徵,需進一步人工確認",
+                "請儘速檢視目前連結內容及網域狀態;如已非原預期網站或內容異常,請移除該連結",
+                "該連結仍存在於市府頁面,若已遭導向不當內容,民眾可能因信任市府而誤點")
     if risk == "REDIRECTED":
-        return ("update", "連結已跳轉至其他網址", "請將連結更新為跳轉後的正確網址")
+        return ("update", "連結已跳轉至其他網址", "請將連結更新為跳轉後的正確網址", "")
     if risk == "DEAD":
         if "釋出" in note or "留意被搶註" in note:
-            return ("act", "外部網域已失效(可能已被釋出／搶註)", "請移除該連結")
+            return ("act",
+                    "外部網域已失效,原網域可能已釋出或遭重新註冊",
+                    "請移除該連結",
+                    "後續若由第三方取得該網域,原市府頁面連結可能直接導向與原用途無關、廣告、詐騙或不當內容")
         if "政府專屬" in note or "無搶註" in note:
-            return ("check", "目標政府網站服務下線", "請確認是否仍需保留此連結")
-        return ("check", "系統連線逾時,未取得回應", "請確認連結是否正常;正常請忽略,失效請移除")
+            return ("check", "目標政府網站服務下線", "請確認是否仍需保留此連結", "")
+        return ("check", "系統連線逾時,未取得回應",
+                "請由一般瀏覽器實際確認連結是否仍可正常使用;正常無需處理,失效請移除或更新", "")
     if risk == "BROKEN":
         if "403" in note or "429" in note:
-            return ("check", "對方網站回應 " + (note or "HTTP 403/429"), "請確認連結是否正常;正常請忽略,失效請移除")
+            return ("check", "對方網站回應 " + (note or "HTTP 403/429") + "(拒絕存取)",
+                    "請由一般瀏覽器實際確認連結是否仍可正常使用;正常無需處理,失效請移除或更新", "")
         if "404" in note:
-            return ("act", "目標頁面回應 404(不存在)", "請確認並移除或更正該連結")
-        return ("check", "HTTP 狀態異常(" + (note or "") + ")", "請確認連結是否正常")
+            return ("act", "目標頁面回應 HTTP 404(找不到頁面)", "請確認並移除或更正該連結", "")
+        return ("check", "HTTP 狀態異常(" + (note or "") + ")",
+                "請由一般瀏覽器實際確認連結是否仍可正常使用", "")
     if risk == "WARN":
-        return ("check", "目標網站 SSL 憑證異常", "請確認連結是否正常")
-    return ("check", note or "系統偵測項目", "請確認連結是否正常")
+        return ("check", "目標網站 SSL 憑證異常", "請由一般瀏覽器實際確認連結是否仍可正常使用", "")
+    return ("check", note or "系統偵測項目", "請由一般瀏覽器實際確認連結是否仍可正常使用", "")
 
 
 def _triage(problems):
-    """回傳 (act, update, check) 三桶,每條附 _cause / _advice。"""
+    """回傳 (act, update, check) 三桶,每條附 _cause / _advice / _risk。"""
     act, update, check = [], [], []
     for p in problems:
-        b, label, advice = classify_cause(p)
-        q = dict(p); q["_cause"] = label; q["_advice"] = advice
+        b, state, advice, risk = classify_cause(p)
+        q = dict(p); q["_cause"] = state; q["_advice"] = advice; q["_risk"] = risk
         (act if b == "act" else update if b == "update" else check).append(q)
     for lst in (act, update, check):
         lst.sort(key=lambda r: (r.get("site_name", ""), r.get("url", "")))
@@ -160,75 +167,96 @@ def _triage(problems):
 
 
 def build_mail_html(org, problems, stamp):
-    """建局處層級彙整信 HTML(需處理先行,不確定者一律「請確認」、不寫誤報,每條附建議做法)。"""
+    """局處層級彙整信:外連治理／資安風險框架;需優先處理先行、人工確認分列、每條附狀態/風險/建議。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
     act, update, check = _triage(problems)
+    cn = "一二三四五六七八九"
+    sec = [0]
+
+    def h(title):
+        sec[0] += 1
+        return f"<p style='margin:16px 0 4px'><b>{cn[sec[0]-1]}、{title}</b></p>"
 
     def n_pages(p):
         loc = p.get("all_locations", "")
         return len([l for l in loc.splitlines() if l.strip()]) or 1
 
-    def line(p):
-        return (f"<li style='margin-bottom:8px'>{html.escape(p['url'])}"
-                f"<br><span style='font-size:10pt'>狀態:{html.escape(p['_cause'])}</span>"
-                f"<br><span style='font-size:10pt;color:#0f6e56'>建議做法:{html.escape(p['_advice'])}</span>"
-                f"<br><span style='font-size:9pt;color:#888'>站:{html.escape(p.get('site_name',''))}"
-                f";出現在 {n_pages(p)} 個頁面</span></li>")
+    def item(p, idx=None):
+        head = f"{idx}. " if idx else ""
+        risk_line = (f"<div style='color:#a32d2d'>風險:{html.escape(p['_risk'])}</div>"
+                     if p.get("_risk") else "")
+        return (f"<li style='margin-bottom:10px;list-style:none'>{head}"
+                f"<span style='word-break:break-all'>{html.escape(p['url'])}</span>"
+                f"<div>狀態:{html.escape(p['_cause'])}</div>{risk_line}"
+                f"<div style='color:#0f6e56'>建議:{html.escape(p['_advice'])}</div>"
+                f"<div style='font-size:9pt;color:#888'>來源網站:{html.escape(p.get('site_name',''))}"
+                f";出現頁面:{n_pages(p)} 頁</div></li>")
 
     P = []
     P.append("<p>您好:</p>")
-    P.append(f"<p>依數發部 115/6/8「委外案或活動結束後未移除網址」清查,{today} 對 "
-             f"<b>{html.escape(org)}</b> 所管網站自動深度掃描,結果如下。</p>")
-    # 摘要
-    P.append("<p><b>■ 摘要</b></p><ul style='font-size:10pt'>")
-    P.append(f"<li><b style='color:#c00000'>需處理:{len(act)} 筆</b></li>")
+    P.append(f"<p>依數位發展部 115 年 6 月 8 日「委外案或活動結束後未移除網址」清查事項,本次針對 "
+             f"<b>{html.escape(org)}</b> 所管網站進行自動化深度掃描,發現部分外部連結已失效或出現異常情形。</p>")
+    P.append("<p>外部網站一旦停止營運或原網域遭釋出,後續可能由第三方重新註冊,並導向與原用途無關、廣告、"
+             "詐騙或其他不當內容。由於該連結仍存在於市府網站頁面,民眾可能基於對市府網站的信任進一步點擊,"
+             "因此建議儘速確認及處理,以降低網站內容與資安風險。</p>")
+    P.append(f"<p style='color:#555'>掃描日期:{today}</p>")
+
+    # 一、掃描摘要
+    P.append(h("掃描摘要"))
+    P.append("<ul style='font-size:10pt'>")
+    P.append(f"<li><b style='color:#c00000'>建議優先處理:{len(act)} 筆</b></li>")
     if update:
         P.append(f"<li>建議更新連結(已跳轉):{len(update)} 筆</li>")
-    P.append(f"<li>請貴處確認:{len(check)} 筆</li></ul>")
-    # 需處理
-    P.append("<p><b>■ 需要貴處處理</b></p>")
+    P.append(f"<li>請人工確認:{len(check)} 筆</li></ul>")
+
+    # 二、建議優先處理
     if act:
-        P.append("<ul style='font-size:10pt'>" + "".join(line(p) for p in act) + "</ul>")
-    else:
-        P.append("<p style='color:#107c10'>本次沒有需要貴處處理的連結。</p>")
+        P.append(h("建議優先處理"))
+        P.append("<ul style='font-size:10pt;padding-left:0'>"
+                 + "".join(item(p, i) for i, p in enumerate(act, 1)) + "</ul>")
+
     # 建議更新(跳轉)
     if update:
-        P.append("<p><b>■ 連結已跳轉,建議更新為新網址</b></p><ul style='font-size:10pt'>")
+        P.append(h("建議更新連結(已跳轉)"))
+        P.append("<ul style='font-size:10pt;padding-left:0'>")
         for p in update:
             fin = p.get("final_url", "") or ""
-            P.append(f"<li style='margin-bottom:6px'>{html.escape(p['url'])}<br>"
-                     f"→ 建議更新為:<b>{html.escape(fin)}</b></li>")
+            P.append(f"<li style='margin-bottom:8px;list-style:none'>"
+                     f"<span style='word-break:break-all'>{html.escape(p['url'])}</span><br>"
+                     f"→ 建議更新為:<b style='word-break:break-all'>{html.escape(fin)}</b>"
+                     f"<div style='font-size:9pt;color:#888'>來源網站:{html.escape(p.get('site_name',''))}</div></li>")
         P.append("</ul>")
-    # 請貴處確認(不臆測誤報,只陳述系統偵測到的狀態)
+
+    # 請協助人工確認
     if check:
-        P.append("<p><b>■ 請貴處確認</b></p>")
-        P.append("<p style='font-size:9.5pt;color:#555'>以下由系統自動偵測到異常狀態,但可能因對方網站設定"
-                 "或暫時性連線問題所致,系統無法自動判定是否為實際失效。<b>請貴處確認</b>:確認正常者無需回覆,"
-                 "確為失效請移除或更正。</p>")
-        P.append("<ul style='font-size:9.5pt'>" + "".join(line(p) for p in check[:30]) + "</ul>")
+        P.append(h("請協助人工確認"))
+        P.append("<p style='font-size:9.5pt;color:#555'>下列連結由系統自動偵測到異常回應,但 HTTP 狀態異常"
+                 "亦可能源於對方網站的存取限制、防爬蟲機制或暫時性連線問題,目前無法僅依自動掃描結果判定為"
+                 "失效連結,請協助人工確認:如網站及內容正常,無需處理;如已失效、改址或內容已非原用途,請移除或更新連結。</p>")
+        P.append("<ul style='font-size:9.5pt;padding-left:0'>"
+                 + "".join(item(p) for p in check[:30]) + "</ul>")
         if len(check) > 30:
             P.append(f"<p style='font-size:9pt;color:#888'>…另有 {len(check)-30} 筆,詳見附件明細。</p>")
-    # 如何回覆
-    P.append("<p><b>■ 如何回覆(選用)</b></p><ul style='font-size:10pt'>")
-    P.append("<li>連結<b>已移除或下架者無需回報</b>——下一輪掃描(約一個月內)就不會再出現。</li>")
-    P.append(f"<li>若<b>已處理／處理中／認為不需處理</b>,請至回饋頁填寫並輸入貴處專屬 "
-             f"<b>PIN 碼</b>(另以專信寄送):<br>🔗 回饋頁:{FEEDBACK_URL}</li></ul>")
-    P.append("<p style='font-size:9pt;color:#808080'>本郵件由連結稽核工具自動產生。完整明細見附件。</p>")
-    return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt'>{''.join(P)}</div>"
+
+    # 處理及回覆方式
+    P.append(h("處理及回覆方式"))
+    P.append("<p style='font-size:10pt'>為降低各局處行政負擔,本案原則採「<b>完成處理即結案</b>」方式:</p>")
+    P.append("<ul style='font-size:10pt'>")
+    P.append("<li>已移除、修正或下架之連結,<b>無需另行回覆</b>,系統將於下一輪掃描時自動確認(約一個月內)。</li>")
+    P.append(f"<li>如屬處理中、經確認無須處理,或有其他特殊情形,請至回饋頁填寫處理情形,並輸入貴處專屬 "
+             f"<b>PIN 碼</b>(另以專信寄送)。<br>🔗 回饋頁:{FEEDBACK_URL}</li></ul>")
+    P.append("<p style='font-size:9pt;color:#808080'>本次掃描係透過自動化方式協助各機關提前發現既有網站中的"
+             "外部連結風險,後續亦將持續定期檢測;完整明細見附件。感謝配合。</p>")
+    return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt;line-height:1.6'>{''.join(P)}</div>"
 
 
 def make_subject(org, problems, stamp):
-    """產主旨:以「需處理幾筆」為主軸,有 AI 判 A 的加【急】。"""
+    """產主旨:以「建議優先處理幾筆」為主軸。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
     act, _u, _c = _triage(problems)
-    has_urgent = any(p.get("_verdict") == "A" for p in act)
     if act:
-        subject = f"網站對外連結稽核結果 - {org} {today}(需處理 {len(act)} 筆)"
-    else:
-        subject = f"網站對外連結稽核結果 - {org} {today}(本次無需處理)"
-    if has_urgent:
-        subject = "【急】" + subject
-    return subject
+        return f"【網站外連稽核】{org} 建議優先處理 {len(act)} 筆 - {today}"
+    return f"【網站外連稽核】{org} 本次無需優先處理 - {today}"
 
 
 def write_org_csv(problems, out_path):
