@@ -200,6 +200,9 @@ def build_mail_html(org, problems, stamp):
              "詐騙或其他不當內容。由於該連結仍存在於市府網站頁面,民眾可能基於對市府網站的信任進一步點擊,"
              "因此建議儘速確認及處理,以降低網站內容與資安風險。</p>")
     P.append(f"<p style='color:#555'>掃描日期:{today}</p>")
+    P.append("<p style='font-size:10pt;color:#a32d2d;border:1px solid #a32d2d;border-radius:6px;"
+             "padding:8px 10px;background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業,"
+             "<b>非社交工程(釣魚)演練</b>;下方回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>")
 
     # 一、掃描摘要
     P.append(h("掃描摘要"))
@@ -255,8 +258,8 @@ def make_subject(org, problems, stamp):
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
     act, _u, _c = _triage(problems)
     if act:
-        return f"【網站外連稽核】{org} 建議優先處理 {len(act)} 筆 - {today}"
-    return f"【網站外連稽核】{org} 本次無需優先處理 - {today}"
+        return f"【網站外連稽核｜非社交工程演練】{org} 建議優先處理 {len(act)} 筆 - {today}"
+    return f"【網站外連稽核｜非社交工程演練】{org} 本次無需優先處理 - {today}"
 
 
 def write_org_csv(problems, out_path):
