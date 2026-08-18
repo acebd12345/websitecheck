@@ -120,106 +120,107 @@ FEEDBACK_URL = "(待建)"   # GAS 回饋頁 URL，建好後填
 
 
 def classify_cause(p):
-    """把一條問題分流成 (bucket, 成因標籤)。bucket ∈ act(需處理)/update(建議更新)/ref(參考誤報)。
-    只信地端 AI 對 SUSPICIOUS 的判定；連線逾時多為境外掃描地緣誤判，降為參考。"""
+    """回傳 (bucket, 狀態, 建議做法)。bucket ∈ act(確定需處理)/update(建議更新)/check(請貴處確認)。
+    原則:確定的才說確定;系統無法自動判定的一律「請貴處確認」,絕不臆測「誤報」。"""
     risk = p.get("risk", ""); note = p.get("note", ""); verdict = p.get("_verdict", "")
     if risk == "SUSPICIOUS":
-        # C(誤報)已在 group_by_org 濾掉;剩 A/B(真)或 ?(未複查成功)一律當需確認,不可當誤報
+        # C(誤報)已在 group_by_org 濾掉;剩 A/B(AI判真)或 ?(未複查)一律列出,不臆測
         if verdict in ("A", "B"):
-            return ("act", "疑遭搶註／掛不當內容(AI 判定真,請確認移除)")
-        return ("act", "命中可疑關鍵字,待確認(未能複查,請人工檢視)")
+            return ("act", "AI 判定此連結連向賭博／色情／搶註內容", "請立即移除該連結")
+        return ("act", "偵測到可疑關鍵字,尚待人工確認", "請人工檢視該連結內容,確認後移除")
     if risk == "REDIRECTED":
-        return ("update", "連結已跳轉,建議更新為新網址")
+        return ("update", "連結已跳轉至其他網址", "請將連結更新為跳轉後的正確網址")
     if risk == "DEAD":
         if "釋出" in note or "留意被搶註" in note:
-            return ("act", "外部網域已釋出(搶註風險,請確認移除)")
+            return ("act", "外部網域已失效(可能已被釋出／搶註)", "請移除該連結")
         if "政府專屬" in note or "無搶註" in note:
-            return ("ref", "政府服務網域下線(非搶註風險)")
-        return ("ref", "連線逾時(多為境外掃描誤判或暫時性)")
+            return ("check", "目標政府網站服務下線", "請確認是否仍需保留此連結")
+        return ("check", "系統連線逾時,未取得回應", "請確認連結是否正常;正常請忽略,失效請移除")
     if risk == "BROKEN":
         if "403" in note or "429" in note:
-            return ("ref", "對方網站阻擋自動檢測(擋爬蟲,通常正常)")
+            return ("check", "對方網站回應 " + (note or "HTTP 403/429"), "請確認連結是否正常;正常請忽略,失效請移除")
         if "404" in note:
-            return ("act", "目標頁 404,連結失效")
-        return ("ref", "HTTP 狀態異常")
+            return ("act", "目標頁面回應 404(不存在)", "請確認並移除或更正該連結")
+        return ("check", "HTTP 狀態異常(" + (note or "") + ")", "請確認連結是否正常")
     if risk == "WARN":
-        return ("ref", "SSL 憑證問題")
-    return ("ref", "其他")
+        return ("check", "目標網站 SSL 憑證異常", "請確認連結是否正常")
+    return ("check", note or "系統偵測項目", "請確認連結是否正常")
 
 
 def _triage(problems):
-    """回傳 (act, update, ref) 三桶,每條附 _cause。"""
-    act, update, ref = [], [], []
+    """回傳 (act, update, check) 三桶,每條附 _cause / _advice。"""
+    act, update, check = [], [], []
     for p in problems:
-        b, label = classify_cause(p)
-        q = dict(p); q["_cause"] = label
-        (act if b == "act" else update if b == "update" else ref).append(q)
-    for lst in (act, update, ref):
+        b, label, advice = classify_cause(p)
+        q = dict(p); q["_cause"] = label; q["_advice"] = advice
+        (act if b == "act" else update if b == "update" else check).append(q)
+    for lst in (act, update, check):
         lst.sort(key=lambda r: (r.get("site_name", ""), r.get("url", "")))
-    return act, update, ref
+    return act, update, check
 
 
 def build_mail_html(org, problems, stamp):
-    """建局處層級彙整信 HTML(成因分流:需處理先行、誤報收摺)。"""
+    """建局處層級彙整信 HTML(需處理先行,不確定者一律「請確認」、不寫誤報,每條附建議做法)。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
-    act, update, ref = _triage(problems)
+    act, update, check = _triage(problems)
 
     def n_pages(p):
         loc = p.get("all_locations", "")
         return len([l for l in loc.splitlines() if l.strip()]) or 1
 
     def line(p):
-        return (f"<li><b style='color:#c00000'>{html.escape(p['_cause'])}</b> — "
-                f"{html.escape(p['url'])}"
-                f"<br><span style='font-size:9pt;color:#666'>出現在 {n_pages(p)} 個頁面;"
-                f"站:{html.escape(p.get('site_name',''))};狀況:{html.escape(p.get('note',''))}</span></li>")
+        return (f"<li style='margin-bottom:8px'>{html.escape(p['url'])}"
+                f"<br><span style='font-size:10pt'>狀態:{html.escape(p['_cause'])}</span>"
+                f"<br><span style='font-size:10pt;color:#0f6e56'>建議做法:{html.escape(p['_advice'])}</span>"
+                f"<br><span style='font-size:9pt;color:#888'>站:{html.escape(p.get('site_name',''))}"
+                f";出現在 {n_pages(p)} 個頁面</span></li>")
 
     P = []
     P.append("<p>您好:</p>")
     P.append(f"<p>依數發部 115/6/8「委外案或活動結束後未移除網址」清查,{today} 對 "
-             f"<b>{html.escape(org)}</b> 所管網站自動深度掃描(含 AI 複查),結果如下。</p>")
+             f"<b>{html.escape(org)}</b> 所管網站自動深度掃描,結果如下。</p>")
     # 摘要
     P.append("<p><b>■ 摘要</b></p><ul style='font-size:10pt'>")
-    P.append(f"<li><b style='color:#c00000'>需貴處處理或確認:{len(act)} 筆</b></li>")
+    P.append(f"<li><b style='color:#c00000'>需處理:{len(act)} 筆</b></li>")
     if update:
         P.append(f"<li>建議更新連結(已跳轉):{len(update)} 筆</li>")
-    P.append(f"<li>系統偵測、多屬誤報(僅供參考):{len(ref)} 筆</li></ul>")
+    P.append(f"<li>請貴處確認:{len(check)} 筆</li></ul>")
     # 需處理
-    P.append("<p><b>■ 需要貴處處理或確認</b></p>")
+    P.append("<p><b>■ 需要貴處處理</b></p>")
     if act:
         P.append("<ul style='font-size:10pt'>" + "".join(line(p) for p in act) + "</ul>")
     else:
-        P.append("<p style='color:#107c10'>本次沒有需要貴處處理的連結 👍</p>")
+        P.append("<p style='color:#107c10'>本次沒有需要貴處處理的連結。</p>")
     # 建議更新(跳轉)
     if update:
-        P.append("<p><b>■ 已跳轉,建議把連結更新為新網址</b></p><ul style='font-size:10pt'>")
+        P.append("<p><b>■ 連結已跳轉,建議更新為新網址</b></p><ul style='font-size:10pt'>")
         for p in update:
             fin = p.get("final_url", "") or ""
-            P.append(f"<li>{html.escape(p['url'])}<br>→ 建議改為:"
-                     f"<b>{html.escape(fin)}</b></li>")
+            P.append(f"<li style='margin-bottom:6px'>{html.escape(p['url'])}<br>"
+                     f"→ 建議更新為:<b>{html.escape(fin)}</b></li>")
         P.append("</ul>")
-    # 參考(誤報,收摺)
-    if ref:
-        P.append(f"<p><b>■ 系統偵測到、但多屬誤報({len(ref)} 筆,無需回報)</b></p>")
-        P.append("<p style='font-size:9pt;color:#666'>多為對方網站阻擋自動檢測、或境外掃描連線逾時,"
-                 "連結對一般使用者通常正常。完整清單見附件。</p>")
-        P.append("<ul style='font-size:9pt;color:#666'>" + "".join(line(p) for p in ref[:25]) + "</ul>")
-        if len(ref) > 25:
-            P.append(f"<p style='font-size:9pt;color:#666'>…另有 {len(ref)-25} 筆,詳見附件 CSV。</p>")
+    # 請貴處確認(不臆測誤報,只陳述系統偵測到的狀態)
+    if check:
+        P.append("<p><b>■ 請貴處確認</b></p>")
+        P.append("<p style='font-size:9.5pt;color:#555'>以下由系統自動偵測到異常狀態,但可能因對方網站設定"
+                 "或暫時性連線問題所致,系統無法自動判定是否為實際失效。<b>請貴處確認</b>:確認正常者無需回覆,"
+                 "確為失效請移除或更正。</p>")
+        P.append("<ul style='font-size:9.5pt'>" + "".join(line(p) for p in check[:30]) + "</ul>")
+        if len(check) > 30:
+            P.append(f"<p style='font-size:9pt;color:#888'>…另有 {len(check)-30} 筆,詳見附件明細。</p>")
     # 如何回覆
     P.append("<p><b>■ 如何回覆(選用)</b></p><ul style='font-size:10pt'>")
     P.append("<li>連結<b>已移除或下架者無需回報</b>——下一輪掃描(約一個月內)就不會再出現。</li>")
-    P.append(f"<li>若認為屬<b>誤報／處理中／無法處理</b>,請至回饋頁填寫,並輸入貴處專屬 "
+    P.append(f"<li>若<b>已處理／處理中／認為不需處理</b>,請至回饋頁填寫並輸入貴處專屬 "
              f"<b>PIN 碼</b>(另以專信寄送):<br>🔗 回饋頁:{FEEDBACK_URL}</li></ul>")
-    P.append("<p style='font-size:9pt;color:#808080'>本郵件由連結稽核工具自動產生"
-             "(可疑內容類已經 AI 讀全文複查)。完整明細見附件 CSV/PDF。</p>")
+    P.append("<p style='font-size:9pt;color:#808080'>本郵件由連結稽核工具自動產生。完整明細見附件。</p>")
     return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt'>{''.join(P)}</div>"
 
 
 def make_subject(org, problems, stamp):
     """產主旨:以「需處理幾筆」為主軸,有 AI 判 A 的加【急】。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
-    act, _u, _r = _triage(problems)
+    act, _u, _c = _triage(problems)
     has_urgent = any(p.get("_verdict") == "A" for p in act)
     if act:
         subject = f"網站對外連結稽核結果 - {org} {today}(需處理 {len(act)} 筆)"
@@ -362,6 +363,37 @@ def send_mail(to, subject, html_body, attachments=None):
         send_outlook(to, subject, html_body, attachments)
 
 
+def _build_report_pdfs(org, problems, base):
+    """用既有 report_html 產該局處(這次有問題的站)的正式報告 → 轉 PDF。
+    回 PDF 路徑 list;任何失敗回 [](呼叫端會退回信件彙整 PDF)。"""
+    try:
+        from engine.report_html import generate_for_sites
+        # 站名→網址(讀站清單 CSV);只挑本局處這次有問題的站
+        names = {(p.get("site_name") or "").strip() for p in problems if (p.get("site_name") or "").strip()}
+        url_by_name = {}
+        if os.path.exists(CSV_LIST):
+            for row in csv.DictReader(open(CSV_LIST, encoding="utf-8-sig")):
+                nm = (row.get("網站名稱") or "").strip()
+                u = (row.get("網址") or "").strip()
+                if nm and u:
+                    url_by_name[nm] = u
+        urls = [url_by_name[n] for n in names if n in url_by_name]
+        if not urls:
+            return []
+        pdfs = []
+        for hp in generate_for_sites(urls):
+            if not hp or not os.path.exists(hp):
+                continue
+            html_str = open(hp, encoding="utf-8").read()
+            pdfp = os.path.splitext(hp)[0] + ".pdf"
+            if html_to_pdf(html_str, pdfp):
+                pdfs.append(pdfp)
+        return pdfs
+    except Exception as e:
+        print(f"  ⚠ [{org}] 產正式報告附件失敗({type(e).__name__}: {e}),改附信件 PDF")
+        return []
+
+
 # ── 主流程 ──
 
 def run(outdir, mail_to=None, dry_run=False):
@@ -431,11 +463,17 @@ def run(outdir, mail_to=None, dry_run=False):
                 print(f"            - [{p['risk']}]{vtag} {p['url'][:60]}")
             continue
 
-        # 寫附件：異常明細 CSV + 信件彙整 HTML 轉 PDF
+        # 附件:異常明細 CSV + 該局處「正式報告」(report_html 產,轉 PDF)
         base = os.path.join(outdir, f"mail_{org.replace(' ', '_')}")
         csv_path = write_org_csv(problems, base + ".csv")
-        pdf_path = html_to_pdf(body, base + ".pdf")
-        attachments = [csv_path] + ([pdf_path] if pdf_path else [])
+        attachments = [csv_path]
+        report_pdfs = _build_report_pdfs(org, problems, base)
+        if report_pdfs:
+            attachments += report_pdfs
+        else:                                   # 報告產不出來→退回信件彙整轉 PDF,不中斷
+            fallback = html_to_pdf(body, base + ".pdf")
+            if fallback:
+                attachments.append(fallback)
 
         try:
             send_mail(to, subject, body, attachments)
