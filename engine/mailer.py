@@ -177,20 +177,37 @@ def build_mail_html(org, problems, stamp):
         sec[0] += 1
         return f"<p style='margin:16px 0 4px'><b>{cn[sec[0]-1]}、{title}</b></p>"
 
-    def n_pages(p):
-        loc = p.get("all_locations", "")
-        return len([l for l in loc.splitlines() if l.strip()]) or 1
+    def page_urls(p):
+        """從 all_locations 取出「該問題連結出現的頁面」網址(去重)。"""
+        out, seen = [], set()
+        for ln in (p.get("all_locations", "") or "").splitlines():
+            parts = ln.split(" | ")
+            u = parts[1].strip() if len(parts) >= 2 else ""
+            if u.startswith("http") and u not in seen:
+                seen.add(u); out.append(u)
+        if not out:
+            fo = (p.get("found_on", "") or "").strip()
+            if fo.startswith("http"):
+                out = [fo]
+        return out
 
     def item(p, idx=None):
         head = f"{idx}. " if idx else ""
         risk_line = (f"<div style='color:#a32d2d'>風險:{html.escape(p['_risk'])}</div>"
                      if p.get("_risk") else "")
-        return (f"<li style='margin-bottom:10px;list-style:none'>{head}"
+        urls = page_urls(p)
+        shown = urls[:8]
+        links = "".join(
+            f"<div style='font-size:9pt'>· <a href='{html.escape(u)}'>{html.escape(u)}</a></div>"
+            for u in shown)
+        more = (f"<div style='font-size:9pt;color:#888'>…等共 {len(urls)} 個頁面</div>"
+                if len(urls) > 8 else "")
+        return (f"<li style='margin-bottom:12px;list-style:none'>{head}"
                 f"<span style='word-break:break-all'>{html.escape(p['url'])}</span>"
                 f"<div>狀態:{html.escape(p['_cause'])}</div>{risk_line}"
                 f"<div style='color:#0f6e56'>建議:{html.escape(p['_advice'])}</div>"
                 f"<div style='font-size:9pt;color:#888'>來源網站:{html.escape(p.get('site_name',''))}"
-                f";出現頁面:{n_pages(p)} 頁</div></li>")
+                f";出現頁面(共 {len(urls)},點擊可開啟):</div>{links}{more}</li>")
 
     P = []
     P.append("<p>您好:</p>")
