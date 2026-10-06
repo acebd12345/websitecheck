@@ -299,11 +299,12 @@ def write_org_csv(problems, out_path):
 # ── 寄信 ──
 
 def _load_mail_config():
-    """從共用 config.json 取 mail/gmail 設定。"""
+    """從共用 config.json 取 mail/gmail/relay 設定。"""
     c = config._cfg
     cfg = configparser.ConfigParser()
     cfg["mail"] = {k: str(v) for k, v in c.get("mail", {}).items()}
     cfg["gmail"] = {k: str(v) for k, v in c.get("gmail", {}).items()}
+    cfg["relay"] = {k: str(v) for k, v in c.get("relay", {}).items()}
     return cfg
 
 
@@ -402,11 +403,51 @@ def send_gmail(cfg, to, subject, html_body, attachments=None):
     print(f"  已寄出(gmail): {', '.join(addrs)}")
 
 
+def send_relay(cfg, to, subject, html_body, attachments=None):
+    """經府內寄信中繼(deploy/mailrelay/relay.py)寄出:HTTPS POST /send,由中繼以 SMTP 交府內 Mail Relay。
+    寄件人由中繼端固定,這裡不能指定。"""
+    import base64
+    import requests
+
+    url = cfg.get("relay", "url", fallback="").strip().rstrip("/")
+    token = cfg.get("relay", "token", fallback="").strip()
+    if not url or not token:
+        raise ValueError("method=relay 需在 config 的 relay 區段填 url 與 token")
+    # ca_file:中繼用自簽/府內 CA 憑證時指定該 CA 檔;留空 = 系統信任的 CA
+    ca_file = cfg.get("relay", "ca_file", fallback="").strip()
+    verify = config._abspath(ca_file) if ca_file else True
+    addrs = parse_recipients(to)
+    if not addrs:
+        raise ValueError(f"無有效收件人: {to!r}")
+    atts = []
+    for att in _attach_list(attachments):
+        with open(att, "rb") as f:
+            atts.append({"name": os.path.basename(att),
+                         "data": base64.b64encode(f.read()).decode("ascii")})
+    r = requests.post(f"{url}/send", json={"to": addrs, "subject": subject,
+                                          "html": html_body, "attachments": atts},
+                      headers={"Authorization": f"Bearer {token}"},
+                      timeout=120, verify=verify)
+    try:
+        res = r.json()
+    except ValueError:
+        res = {"error": r.text[:200]}
+    if r.status_code != 200 or not res.get("ok"):
+        raise RuntimeError(f"relay 寄信失敗 HTTP {r.status_code}: {res.get('error')}")
+    refused = res.get("refused") or {}
+    ok = [a for a in addrs if a not in refused]
+    print(f"  已寄出(relay): {', '.join(ok)}")
+    if refused:
+        print(f"  ⚠ Mail Relay 拒收: {', '.join(refused)}")
+
+
 def send_mail(to, subject, html_body, attachments=None):
     cfg = _load_mail_config()
     method = cfg.get("mail", "method", fallback="outlook").strip().lower()
     if method == "gmail":
         send_gmail(cfg, to, subject, html_body, attachments)
+    elif method == "relay":
+        send_relay(cfg, to, subject, html_body, attachments)
     else:
         send_outlook(to, subject, html_body, attachments)
 

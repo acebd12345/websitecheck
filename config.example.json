@@ -11,6 +11,7 @@
   "mail_override_to": "your-email@example.com",
   "mail": { "method": "outlook", "cc": "", "subject": "網站對外連結稽核結果" },
   "gmail": { "user": "you@gmail.com", "app_password": "YOUR_GMAIL_APP_PASSWORD" },
+  "relay": { "url": "https://YOUR-RELAY-HOST", "token": "YOUR_RELAY_TOKEN", "ca_file": "" },
   "scan": {
     "max_pages": 8000,
     "content_whitelist": "porkbun.com, gname.com",
@@ -19,6 +20,6 @@
   "schedule": { "groups": 5, "log_keep_days": 3 },
 
   "_說明_ai_provider": "openai / anthropic / gemini（見 README）",
-  "_說明_mail": "method=outlook(本機Windows) 或 gmail(Linux主機SMTP，填 gmail.app_password)",
+  "_說明_mail": "method=outlook(本機Windows) 或 gmail(Linux主機SMTP，填 gmail.app_password) 或 relay(經府內寄信中繼 deploy/mailrelay，填 relay.url/token；中繼用自簽憑證時 ca_file 指向其 CA 檔)",
   "_說明_清單來源": "monthly 讀主試算表 master_worksheet；daily 讀 sync_config 從主設定表產生的 private/domains.txt"
 }

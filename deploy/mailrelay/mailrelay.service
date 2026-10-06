@@ -1,0 +1,25 @@
+[Unit]
+Description=websitecheck mail relay (HTTPS -> 府內 Mail Relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hermesops
+Group=hermesops
+WorkingDirectory=/home/hermesops/mailrelay
+EnvironmentFile=/home/hermesops/mailrelay/mailrelay.env
+ExecStart=/usr/bin/python3 /home/hermesops/mailrelay/relay.py
+Restart=on-failure
+RestartSec=5
+
+# 一般帳號綁 443 只給這一項能力,其餘一律收掉
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target
