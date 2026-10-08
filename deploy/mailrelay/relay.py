@@ -171,6 +171,8 @@ class Server(ThreadingHTTPServer):
         request.settimeout(30)  # 交握與讀寫逾時,避免慢速連線一直佔住執行緒
         try:
             conn = self.tls.wrap_socket(request, server_side=True)
+        except (ssl.SSLEOFError, ConnectionError, TimeoutError):
+            return  # 只連 TCP 就斷(網路設備每幾秒的健康檢查),不記 log 以免洗版
         except (ssl.SSLError, OSError) as e:
             log("TLS 交握失敗", client_address[0], e)
             return
