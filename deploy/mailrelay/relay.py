@@ -11,7 +11,9 @@ HTTPS 把信交給這支服務,由它在府內用 SMTP 交給 Mail Relay。
 所有位址、帳號、token 一律讀環境變數(systemd EnvironmentFile),**本檔不得寫死**——repo 是 public。
 
 環境變數(範本見 mailrelay.env.example):
-  RELAY_TOKEN        必填。呼叫端要帶 Authorization: Bearer <token>
+  RELAY_TOKENS       必填(或用舊的 RELAY_TOKEN)。每個呼叫系統一把:「名稱:token,名稱:token」,
+                     呼叫端帶 Authorization: Bearer <token>,log 記名稱;停用某系統=刪掉它那一把
+  RELAY_TOKEN        舊式單一 token,視同名稱 default;與 RELAY_TOKENS 可並存
   RELAY_FROM         必填。寄件人(固定,呼叫端不能改,避免被拿去冒名寄信)
   RELAY_SMTP_HOST    必填。府內 Mail Relay
   RELAY_SMTP_PORT    選填,預設 25
@@ -42,7 +44,31 @@ def _env(name, default=None, required=False):
     return v
 
 
-TOKEN = _env("RELAY_TOKEN", required=True).encode()
+def _load_tokens():
+    """回傳 [(名稱, token bytes)]。名稱只准英數 _ . -,token 不得重複或過短。"""
+    pairs = []
+    for i, item in enumerate(_env("RELAY_TOKENS", "").split(","), 1):
+        if item.strip():
+            name, sep, tok = item.strip().partition(":")
+            if not sep:  # 不印內容:可能是漏寫名稱的 token 本身
+                sys.exit(f"[mailrelay] RELAY_TOKENS 第 {i} 項格式錯誤(要「名稱:token」)")
+            pairs.append((name.strip(), tok.strip()))
+    if _env("RELAY_TOKEN"):
+        pairs.append(("default", _env("RELAY_TOKEN").strip()))
+    if not pairs:
+        sys.exit("[mailrelay] 缺少環境變數 RELAY_TOKENS(或 RELAY_TOKEN)")
+    names, toks = [n for n, _ in pairs], [t for _, t in pairs]
+    for n, t in pairs:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", n):
+            sys.exit(f"[mailrelay] token 名稱只能用英數 _ . -: {n!r}")
+        if len(t) < 16:
+            sys.exit(f"[mailrelay] {n} 的 token 太短(至少 16 字元)")
+    if len(set(names)) != len(names) or len(set(toks)) != len(toks):
+        sys.exit("[mailrelay] token 名稱或值重複")
+    return [(n, t.encode()) for n, t in pairs]
+
+
+TOKENS = _load_tokens()
 FROM = _env("RELAY_FROM", required=True)
 SMTP_HOST = _env("RELAY_SMTP_HOST", required=True)
 SMTP_PORT = int(_env("RELAY_SMTP_PORT", "25"))
@@ -136,9 +162,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed():
             return
         auth = self.headers.get("Authorization", "").encode()
-        if not hmac.compare_digest(auth, b"Bearer " + TOKEN):
+        who = None
+        for name, tok in TOKENS:  # 全部比完不提早跳出,比對時間不透露是第幾把
+            if hmac.compare_digest(auth, b"Bearer " + tok):
+                who = name
+        if who is None:
             log("401 token 錯誤", ip)
             return self._reply(401, {"ok": False, "error": "unauthorized"})
+        src = f"{who}@{ip}"
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -148,15 +179,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             msg, addrs = build_message(json.loads(self.rfile.read(length)))
         except (ValueError, json.JSONDecodeError, base64.binascii.Error) as e:
-            log("400", ip, e)
+            log("400", src, e)
             return self._reply(400, {"ok": False, "error": str(e)})
         try:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=60) as s:
                 refused = s.send_message(msg, from_addr=FROM, to_addrs=addrs)
         except (smtplib.SMTPException, OSError) as e:
-            log("502 Mail Relay 錯誤", ip, type(e).__name__, e)
+            log("502 Mail Relay 錯誤", src, type(e).__name__, e)
             return self._reply(502, {"ok": False, "error": f"{type(e).__name__}: {e}"})
-        log("200 已轉交", ip, f"收件人 {len(addrs)}", f"拒收 {len(refused)}")
+        log("200 已轉交", src, f"收件人 {len(addrs)}", f"拒收 {len(refused)}")
         self._reply(200, {"ok": True, "refused": refused})
 
 
@@ -199,7 +230,7 @@ def main():
     else:
         sys.exit("[mailrelay] 沒有 RELAY_CERT/RELAY_KEY 時只准綁 127.0.0.1(不可明文對外)")
     log(f"mailrelay 啟動 {scheme}://{HOST}:{PORT}  允許來源 {sorted(ALLOW) or '不限'}  "
-        f"收件網域 {sorted(TO_DOMAINS) or '不限'}")
+        f"收件網域 {sorted(TO_DOMAINS) or '不限'}  token {[n for n, _ in TOKENS]}")
     srv.serve_forever()
 
 
