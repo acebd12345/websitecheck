@@ -209,8 +209,19 @@ def build_mail_html(org, problems, stamp):
                 f"<div style='font-size:9pt;color:#888'>來源網站:{html.escape(p.get('site_name',''))}"
                 f";出現頁面(共 {len(urls)},點擊可開啟):</div>{links}{more}</li>")
 
+    fb = html.escape(FEEDBACK_URL)
+    fb_btn = (f"<a href='{fb}' style='display:inline-block;background:#1f6feb;color:#ffffff;"
+              f"text-decoration:none;font-weight:bold;border-radius:5px;padding:3px 12px;margin:0 4px'>"
+              f"前往回饋頁 →</a>" if FEEDBACK_URL.startswith("http") else f"(回饋頁:{fb})")
+
     P = []
     P.append("<p>您好:</p>")
+    # 沒耐心的讀者只看第一屏:要不要做、要不要回,開頭就講完(信內 #錨點 在 Outlook 網頁版不可靠,按鈕直接放這)
+    P.append("<div style='font-size:11pt;border:2px solid #2e7d32;background:#e8f5e9;border-radius:6px;"
+             "padding:8px 12px;margin:8px 0'>"
+             "📌 <b>處理完即可,不用回信、不用來電。</b>系統下次掃描(約一個月內)會自動確認。<br>"
+             f"只有「您確認系統判斷錯誤」時,才需要填回饋頁:{fb_btn}"
+             "<span style='font-size:9.5pt;color:#555'>(PIN 碼另信寄送)</span></div>")
     P.append(f"<p>依數位發展部 115 年 6 月 8 日「委外案或活動結束後未移除網址」清查事項,本次針對 "
              f"<b>{html.escape(org)}</b> 所管網站進行自動化深度掃描,發現部分外部連結已失效或出現異常情形。</p>")
     P.append("<p>外部網站一旦停止營運或原網域遭釋出,後續可能由第三方重新註冊,並導向與原用途無關、廣告、"
@@ -219,7 +230,7 @@ def build_mail_html(org, problems, stamp):
     P.append(f"<p style='color:#555'>掃描日期:{today}</p>")
     P.append("<p style='font-size:10pt;color:#a32d2d;border:1px solid #a32d2d;border-radius:6px;"
              "padding:8px 10px;background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業,"
-             "<b>非社交工程(釣魚)演練</b>;下方回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>")
+             "<b>非社交工程(釣魚)演練</b>;本信回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>")
 
     # 一、掃描摘要
     P.append(h("掃描摘要"))
@@ -252,7 +263,7 @@ def build_mail_html(org, problems, stamp):
         P.append(h("請協助人工確認"))
         P.append("<p style='font-size:9.5pt;color:#555'>下列連結由系統自動偵測到異常回應,但 HTTP 狀態異常"
                  "亦可能源於對方網站的存取限制、防爬蟲機制或暫時性連線問題,目前無法僅依自動掃描結果判定為"
-                 "失效連結,請協助人工確認:如網站及內容正常,無需處理;如已失效、改址或內容已非原用途,請移除或更新連結。</p>")
+                 "失效連結,請協助人工確認:<b>如網站正常,不用處理也不用回覆</b>;如已失效、改址或內容已非原用途,請移除或更新連結。</p>")
         P.append("<ul style='font-size:9.5pt;padding-left:0'>"
                  + "".join(item(p) for p in check[:30]) + "</ul>")
         if len(check) > 30:
@@ -260,11 +271,13 @@ def build_mail_html(org, problems, stamp):
 
     # 處理及回覆方式
     P.append(h("處理及回覆方式"))
-    P.append("<p style='font-size:10pt'>為降低各局處行政負擔,本案原則採「<b>完成處理即結案</b>」方式:</p>")
-    P.append("<ul style='font-size:10pt'>")
-    P.append("<li>已移除、修正或下架之連結,<b>無需另行回覆</b>,系統將於下一輪掃描時自動確認(約一個月內)。</li>")
-    P.append(f"<li>如屬處理中、經確認無須處理,或有其他特殊情形,請至回饋頁填寫處理情形,並輸入貴處專屬 "
-             f"<b>PIN 碼</b>(另以專信寄送)。<br>🔗 回饋頁:{FEEDBACK_URL}</li></ul>")
+    P.append("<ul style='font-size:10.5pt;list-style:none;padding-left:0;margin:4px 0'>"
+             "<li style='margin-bottom:6px'>✅ <b>已移除或修正連結</b> → 不用回覆,下次掃描自動確認。</li>"
+             "<li style='margin-bottom:6px'>✅ <b>「請協助人工確認」的連結開啟正常</b> → 不用處理,也不用回覆。</li></ul>")
+    P.append("<div style='font-size:10.5pt;border:2px solid #1f6feb;background:#e8f0fe;border-radius:6px;"
+             "padding:8px 12px'>📝 <b>只有一種情況要填回饋頁:您確認某條連結應該保留(系統判斷錯誤)。</b>"
+             f"<div style='margin:8px 0 4px'>{fb_btn}</div>"
+             "<div style='font-size:9.5pt;color:#555'>填寫時需輸入貴處 PIN 碼(另信寄送)。</div></div>")
     P.append("<p style='font-size:9pt;color:#808080'>本次掃描係透過自動化方式協助各機關提前發現既有網站中的"
              "外部連結風險,後續亦將持續定期檢測;完整明細見附件。感謝配合。</p>")
     return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt;line-height:1.6'>{''.join(P)}</div>"
