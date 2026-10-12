@@ -356,6 +356,67 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     return result
 
 
+# ── 伺服器回 404、瀏覽器渲染正常的 SPA ──
+# 台北服務通(Angular SSR)對所有 /case-detail/* 伺服器端一律回 404(真案件與亂打編號 body 幾乎相同),
+# 瀏覽器 hydrate 後才抓資料顯示 → requests 只看狀態碼會整批誤判(2026-10 單週 193 筆)。
+# 不整域免檢(會漏掉案件真的下架),改用瀏覽器渲染逐頁確認。
+SPA_404_HOSTS = {"service.taipei"}
+_SPA_NOTFOUND_RE = re.compile(r"Oops|無法找到此頁面")
+_SPA_GENERIC_TITLES = {"臺北市政府 - 台北服務通"}   # 找不到案件時只剩站名標題
+
+
+def _recheck_spa_404(results):
+    """對 SPA_404_HOSTS 的 404 用瀏覽器複查:有內容→OK、找不到頁面→維持 BROKEN 404、無法渲染→請人工確認。
+    在多執行緒檢測結束後循序執行,全程只開一個瀏覽器(Hermes 4GB 無 swap,曾被 Playwright 吃光)。"""
+    targets = [r for r in results
+               if r["risk"] == "BROKEN" and r["status"] == "404" and r["host"] in SPA_404_HOSTS]
+    if not targets:
+        return
+
+    def manual(r, why):   # note 不含 404 → mailer 歸「請人工確認」而非優先處理
+        r["note"] = f"伺服器回應異常,瀏覽器複查未完成({why}),請人工確認"
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        for r in targets:
+            manual(r, "Playwright未安裝")
+        return
+    print(f"  SPA 404 瀏覽器複查 {len(targets)} 筆...")
+    try:
+        with sync_playwright() as p:
+            b = p.chromium.launch()
+            try:
+                for r in targets:
+                    # 後端 API 偶發失敗也會顯示 Oops(實測 AT054 一次 Oops、隨後連 4 次正常)→ 連兩次找不到才算
+                    for attempt in range(2):
+                        pg = b.new_page()
+                        try:
+                            pg.goto(r["url"], wait_until="networkidle", timeout=30000)
+                            pg.wait_for_timeout(1500)
+                            title = (pg.title() or "").strip()
+                            text = pg.inner_text("body")
+                        except Exception as e:
+                            manual(r, type(e).__name__)
+                            break
+                        finally:
+                            pg.close()
+                        if not (_SPA_NOTFOUND_RE.search(text) or title in _SPA_GENERIC_TITLES or not title):
+                            r["risk"] = "OK"; r["title"] = title[:80]
+                            r["note"] = "伺服器回 404 但瀏覽器渲染正常(SPA),視為正常"
+                            break
+                        if attempt == 1:
+                            r["note"] = "HTTP 404(瀏覽器複查兩次確認頁面不存在)"
+            finally:
+                b.close()
+    except Exception as e:   # 瀏覽器起不來:未處理的全改人工確認,不中斷整站
+        for r in targets:
+            if r["risk"] == "BROKEN" and r["note"] == "HTTP 404":
+                manual(r, type(e).__name__)
+    ok = sum(1 for r in targets if r["risk"] == "OK")
+    print(f"  SPA 404 複查完成:正常 {ok} / 共 {len(targets)}")
+
+
 def audit_site(start_url, max_pages=5000, links_log_path=None,
                content_whitelist=(), skip_hosts=()):
     """稽核單一網站,回傳排序後的結果 list(供批次腳本呼叫)"""
@@ -382,6 +443,7 @@ def audit_site(start_url, max_pages=5000, links_log_path=None,
                                 "risk": "DEAD", "note": f"檢測例外: {type(e).__name__}"})
             if n % 100 == 0:
                 print(f"  已檢測 {n}/{len(external)}")
+    _recheck_spa_404(results)
     results.sort(key=lambda r: (RISK_ORDER.get(r["risk"], 9), r["host"]))
     return results
 
