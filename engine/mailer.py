@@ -114,6 +114,18 @@ def group_by_org(allp, verified, progress):
     return groups
 
 
+def load_org_pin_map():
+    """從 Sheet「局處PIN」分頁建 局處 → PIN(放進信件按鈕網址)。讀不到回 {}(按鈕不帶 PIN,仍可手動登入)。"""
+    try:
+        import gspread
+        gc = gspread.service_account(filename=config.GA_KEY_FILE)
+        rows = gc.open_by_key(config.MASTER_SHEET_ID).worksheet("局處PIN").get_all_values()[1:]
+        return {r[0].strip(): r[1].strip() for r in rows if len(r) > 1 and r[0].strip() and r[1].strip()}
+    except Exception as e:
+        print(f"  ⚠ 讀局處PIN失敗({type(e).__name__}),信件按鈕不帶 PIN")
+        return {}
+
+
 # ── 信件建構 ──
 
 FEEDBACK_URL = config.get("feedback_url", "") or "(待建)"   # GAS 回饋頁 /exec，存 config(不進公開 repo)
@@ -166,7 +178,7 @@ def _triage(problems):
     return act, update, check
 
 
-def build_mail_html(org, problems, stamp):
+def build_mail_html(org, problems, stamp, pin=None):
     """局處層級彙整信:外連治理／資安風險框架;需優先處理先行、人工確認分列、每條附狀態/風險/建議。"""
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
     act, update, check = _triage(problems)
@@ -209,7 +221,8 @@ def build_mail_html(org, problems, stamp):
                 f"<div style='font-size:9pt;color:#888'>來源網站:{html.escape(p.get('site_name',''))}"
                 f";出現頁面(共 {len(urls)},點擊可開啟):</div>{links}{more}</li>")
 
-    fb = html.escape(FEEDBACK_URL)
+    # 按鈕網址帶該局處 PIN(#pin=,# 後不送伺服器)→ 回饋頁自動登入,承辦不用知道/保管 PIN(取代 PIN 專信)
+    fb = html.escape(FEEDBACK_URL + (f"#pin={pin}" if pin else ""))
     fb_btn = (f"<a href='{fb}' style='display:inline-block;background:#1f6feb;color:#ffffff;"
               f"text-decoration:none;font-weight:bold;border-radius:5px;padding:3px 12px;margin:0 4px'>"
               f"前往回饋頁 →</a>" if FEEDBACK_URL.startswith("http") else f"(回饋頁:{fb})")
@@ -221,7 +234,7 @@ def build_mail_html(org, problems, stamp):
              "padding:8px 12px;margin:8px 0'>"
              "📌 <b>處理完即可,不用回信、不用來電。</b>系統下次掃描(約一個月內)會自動確認。<br>"
              f"只有「您確認系統判斷錯誤」時,才需要填回饋頁:{fb_btn}"
-             "<span style='font-size:9.5pt;color:#555'>(PIN 碼另信寄送)</span></div>")
+             "<span style='font-size:9.5pt;color:#555'>(點按鈕即自動登入)</span></div>")
     P.append(f"<p>依數位發展部 115 年 6 月 8 日「委外案或活動結束後未移除網址」清查事項,本次針對 "
              f"<b>{html.escape(org)}</b> 所管網站進行自動化深度掃描,發現部分外部連結已失效或出現異常情形。</p>")
     P.append("<p>外部網站一旦停止營運或原網域遭釋出,後續可能由第三方重新註冊,並導向與原用途無關、廣告、"
@@ -277,7 +290,8 @@ def build_mail_html(org, problems, stamp):
     P.append("<div style='font-size:10.5pt;border:2px solid #1f6feb;background:#e8f0fe;border-radius:6px;"
              "padding:8px 12px'>📝 <b>只有一種情況要填回饋頁:您確認某條連結應該保留(系統判斷錯誤)。</b>"
              f"<div style='margin:8px 0 4px'>{fb_btn}</div>"
-             "<div style='font-size:9.5pt;color:#555'>填寫時需輸入貴處 PIN 碼(另信寄送)。</div></div>")
+             "<div style='font-size:9.5pt;color:#555'>按鈕已帶入貴處專屬登入碼,點擊即自動登入;"
+             "請勿轉寄本信予非相關人員。</div></div>")
     P.append("<p style='font-size:9pt;color:#808080'>本次掃描係透過自動化方式協助各機關提前發現既有網站中的"
              "外部連結風險,後續亦將持續定期檢測;完整明細見附件。感謝配合。</p>")
     return f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt;line-height:1.6'>{''.join(P)}</div>"
@@ -510,6 +524,7 @@ def run(outdir, mail_to=None, dry_run=False):
     allp, verified, progress = load_report(outdir)
     groups = group_by_org(allp, verified, progress)
     org_email = load_org_email_map()
+    org_pin = load_org_pin_map()
 
     # 從目錄名取日期戳
     dirname = os.path.basename(outdir)
@@ -545,7 +560,7 @@ def run(outdir, mail_to=None, dry_run=False):
                     continue
 
         subject = make_subject(org, problems, stamp)
-        body = build_mail_html(org, problems, stamp)
+        body = build_mail_html(org, problems, stamp, pin=org_pin.get(org))
 
         n_confirmed = len(confirmed)
         n_pending = sum(1 for p in problems if p.get("_pending_human"))

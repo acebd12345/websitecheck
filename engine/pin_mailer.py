@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-回饋頁 PIN 碼:產生/輪替 + 經府內 Mail Relay 寄給各局處。
+回饋頁 PIN 碼:產生/輪替(+ 可選:經府內 Mail Relay 寄 PIN 專信)。
+
+2026-10-12 起 PIN 直接放進稽核通知信按鈕(mailer 讀「局處PIN」帶 #pin=),承辦點了就自動登入,
+平常不需要寄 PIN 專信;每季只要 `--rotate --no-mail` 換新即可(舊信按鈕隨之失效)。專信功能留作備用。
 
 取代 Apps Script 的 MailApp 寄送(Gmail 寄件人+密碼+陌生長網址,像釣魚信)。
 PIN 存 Sheet「局處PIN」分頁(回饋頁 GAS 的 verifyPin 讀同一張),收件人讀「局處聯絡人員表」G 欄。
@@ -9,7 +12,8 @@ PIN 存 Sheet「局處PIN」分頁(回饋頁 GAS 的 verifyPin 讀同一張),收
 用法:
   python -m engine.pin_mailer --dry-run            # 只印要寄給誰
   python -m engine.pin_mailer --org 資訊局          # 只寄名稱含「資訊局」的局處
-  python -m engine.pin_mailer --rotate             # 全部重產 PIN(每季)再寄
+  python -m engine.pin_mailer --rotate             # 全部重產 PIN 再寄專信
+  python -m engine.pin_mailer --rotate --no-mail   # 每季輪替(只寫 Sheet,不寄信)← 平常用這個
 """
 import argparse
 import datetime
@@ -113,6 +117,7 @@ def main():
     ap.add_argument("--rotate", action="store_true", help="全部重產 PIN(每季)")
     ap.add_argument("--org", default="", help="只寄名稱含此字串的局處")
     ap.add_argument("--mail-to", default=None, help="收件人 override(測試用)")
+    ap.add_argument("--no-mail", action="store_true", help="只產生/輪替寫回 Sheet,不寄 PIN 專信")
     ap.add_argument("--dry-run", action="store_true", help="不寫 Sheet、不寄信,只印")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
@@ -127,6 +132,8 @@ def main():
                 print(f"  {o} → {args.mail_to or contacts[o] or '(無收件人,跳過)'}")
         return
     pins = ensure_pins(sh, orgs, rotate=args.rotate)
+    if args.no_mail:
+        return
     sent = 0
     for org in orgs:
         if args.org and args.org not in org:
