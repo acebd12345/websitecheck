@@ -595,6 +595,13 @@ def run(outdir, mail_to=None, dry_run=False):
         try:
             send_mail(to, subject, body, attachments)
             sent += 1
+            # 留存副本:relay 尚不支援 Cc,另寄一封給 config mail_copy_to(承辦看不到;override 測試時不重複寄)
+            copy_to = (config.get("mail_copy_to", "") or "").strip()
+            if copy_to and not override:
+                try:
+                    send_mail(copy_to, f"[副本→{to}] {subject}", body, attachments)
+                except Exception as e:
+                    print(f"  ⚠ [{org}] 副本寄送失敗: {e}")
         except Exception as e:
             print(f"  !! [{org}] 寄信失敗: {e}")
 
