@@ -650,6 +650,12 @@ def main():
         outdir = os.path.join(config.PRIVATE_DIR, "reports", outdir)
 
     print(f"===== 深掃寄信 {os.path.basename(outdir)} =====")
+    # 單獨補寄時也先更新站清單快照(局處Email 以 Sheet 為準;full_overnight 掃描前已會更新)
+    try:
+        from engine import page_budget
+        print(f"站清單快照:已從 Sheet 更新({page_budget.refresh_csv(CSV_LIST)} 站)")
+    except Exception as e:
+        print(f"[警告] 站清單快照更新失敗({type(e).__name__}),沿用既有快照")
     rcpt_desc = args.mail_to or "各局處Email真值"
     print(f"收件人: {rcpt_desc}" + (" [DRY-RUN]" if args.dry_run else ""))
     sent, skipped, details = run(outdir, mail_to=args.mail_to or None, dry_run=args.dry_run)
