@@ -89,19 +89,29 @@ def build_message(d):
     """驗證請求內容並組信。錯誤一律丟 ValueError(回 400)。"""
     if not isinstance(d, dict):
         raise ValueError("內容必須是 JSON 物件")
-    to = d.get("to")
-    if isinstance(to, str):
-        to = [to]
-    if not isinstance(to, list) or not to:
-        raise ValueError("to 必須是非空的收件人清單")
-    addrs = []
-    for t in to:
-        m = RE_EMAIL.match(str(t).strip())
-        if not m:
-            raise ValueError(f"收件人格式錯誤: {t!r}")
-        if TO_DOMAINS and m.group(1).lower() not in TO_DOMAINS:
-            raise ValueError(f"收件網域不在允許清單: {m.group(1)}")
-        addrs.append(str(t).strip())
+    def _addr_list(key, required=False):
+        v = d.get(key) or []
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list) or (required and not v):
+            raise ValueError(f"{key} 必須是{'非空的' if required else ''}收件人清單")
+        out = []
+        for t in v:
+            m = RE_EMAIL.match(str(t).strip())
+            if not m:
+                raise ValueError(f"{key} 格式錯誤: {t!r}")
+            if TO_DOMAINS and m.group(1).lower() not in TO_DOMAINS:
+                raise ValueError(f"收件網域不在允許清單: {m.group(1)}")
+            out.append(str(t).strip())
+        return out
+
+    to = _addr_list("to", required=True)
+    cc = _addr_list("cc")      # 選填;放進 Cc 標頭
+    bcc = _addr_list("bcc")    # 選填;只進 SMTP 收件人,不出現在標頭
+    seen, addrs = set(), []
+    for x in to + cc + bcc:          # 去重(不分大小寫),保留順序
+        if x.lower() not in seen:
+            seen.add(x.lower()); addrs.append(x)
     subject = str(d.get("subject") or "").strip()
     html = d.get("html")
     if not subject or not isinstance(html, str):
@@ -109,7 +119,9 @@ def build_message(d):
 
     msg = EmailMessage()
     msg["From"] = FROM
-    msg["To"] = ", ".join(addrs)
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
     msg["Subject"] = subject
     msg.set_content("此信為 HTML 格式,請使用支援 HTML 的郵件軟體閱讀。")
     msg.add_alternative(html, subtype="html")

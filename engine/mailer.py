@@ -378,7 +378,7 @@ def html_to_pdf(html, pdf_path):
         return None
 
 
-def send_outlook(to, subject, html_body, attachments=None):
+def send_outlook(to, subject, html_body, attachments=None, cc=None, bcc=None):
     import win32com.client
     addrs = parse_recipients(to)
     if not addrs:
@@ -387,6 +387,10 @@ def send_outlook(to, subject, html_body, attachments=None):
     outlook = win32com.client.Dispatch("Outlook.Application")
     mail = outlook.CreateItem(0)
     mail.To = to
+    if parse_recipients(cc):
+        mail.CC = "; ".join(parse_recipients(cc))
+    if parse_recipients(bcc):
+        mail.BCC = "; ".join(parse_recipients(bcc))
     mail.Subject = subject
     mail.HTMLBody = html_body
     for att in _attach_list(attachments):
@@ -400,7 +404,7 @@ def send_outlook(to, subject, html_body, attachments=None):
         print(f"  已開草稿(outlook 安全性阻擋自動寄出): {to}")
 
 
-def send_gmail(cfg, to, subject, html_body, attachments=None):
+def send_gmail(cfg, to, subject, html_body, attachments=None, cc=None, bcc=None):
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -414,6 +418,9 @@ def send_gmail(cfg, to, subject, html_body, attachments=None):
     msg = MIMEMultipart()
     msg["From"] = user
     msg["To"] = ", ".join(addrs)  # 郵件標頭以逗號分隔
+    cc_l, bcc_l = parse_recipients(cc), parse_recipients(bcc)
+    if cc_l:
+        msg["Cc"] = ", ".join(cc_l)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     for att in _attach_list(attachments):
@@ -426,11 +433,11 @@ def send_gmail(cfg, to, subject, html_body, attachments=None):
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
         s.starttls()
         s.login(user, pwd)
-        s.send_message(msg, to_addrs=addrs)  # 逐一送給每個承辦
+        s.send_message(msg, to_addrs=addrs + cc_l + bcc_l)  # 密件副本只進信封、不進標頭
     print(f"  已寄出(gmail): {', '.join(addrs)}")
 
 
-def send_relay(cfg, to, subject, html_body, attachments=None):
+def send_relay(cfg, to, subject, html_body, attachments=None, cc=None, bcc=None):
     """經府內寄信中繼(deploy/mailrelay/relay.py)寄出:HTTPS POST /send,由中繼以 SMTP 交府內 Mail Relay。
     寄件人由中繼端固定,這裡不能指定。"""
     import base64
@@ -451,8 +458,12 @@ def send_relay(cfg, to, subject, html_body, attachments=None):
         with open(att, "rb") as f:
             atts.append({"name": os.path.basename(att),
                          "data": base64.b64encode(f.read()).decode("ascii")})
-    r = requests.post(f"{url}/send", json={"to": addrs, "subject": subject,
-                                          "html": html_body, "attachments": atts},
+    payload = {"to": addrs, "subject": subject, "html": html_body, "attachments": atts}
+    if parse_recipients(cc):
+        payload["cc"] = parse_recipients(cc)     # 中繼 2026-10-13 起支援 cc/bcc
+    if parse_recipients(bcc):
+        payload["bcc"] = parse_recipients(bcc)
+    r = requests.post(f"{url}/send", json=payload,
                       headers={"Authorization": f"Bearer {token}"},
                       timeout=120, verify=verify)
     try:
@@ -463,20 +474,21 @@ def send_relay(cfg, to, subject, html_body, attachments=None):
         raise RuntimeError(f"relay 寄信失敗 HTTP {r.status_code}: {res.get('error')}")
     refused = res.get("refused") or {}
     ok = [a for a in addrs if a not in refused]
-    print(f"  已寄出(relay): {', '.join(ok)}")
+    extra = "".join(f" {k}:{len(payload[k])}" for k in ("cc", "bcc") if k in payload)
+    print(f"  已寄出(relay): {', '.join(ok)}{extra}")
     if refused:
         print(f"  ⚠ Mail Relay 拒收: {', '.join(refused)}")
 
 
-def send_mail(to, subject, html_body, attachments=None):
+def send_mail(to, subject, html_body, attachments=None, cc=None, bcc=None):
     cfg = _load_mail_config()
     method = cfg.get("mail", "method", fallback="outlook").strip().lower()
     if method == "gmail":
-        send_gmail(cfg, to, subject, html_body, attachments)
+        send_gmail(cfg, to, subject, html_body, attachments, cc, bcc)
     elif method == "relay":
-        send_relay(cfg, to, subject, html_body, attachments)
+        send_relay(cfg, to, subject, html_body, attachments, cc, bcc)
     else:
-        send_outlook(to, subject, html_body, attachments)
+        send_outlook(to, subject, html_body, attachments, cc, bcc)
 
 
 def _build_report_pdfs(org, problems, base):
