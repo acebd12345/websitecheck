@@ -114,6 +114,19 @@ def group_by_org(allp, verified, progress):
     return groups
 
 
+def load_org_bcc_map():
+    """從 Sheet「局處聯絡人員表」的「密件副本人員」欄建 局處 → 密件副本(依表頭找欄,不靠欄位順序)。讀不到回 {}。"""
+    try:
+        import gspread
+        gc = gspread.service_account(filename=config.GA_KEY_FILE)
+        rows = gc.open_by_key(config.MASTER_SHEET_ID).worksheet("局處聯絡人員表").get_all_values()
+        i = rows[0].index("密件副本人員")
+        return {r[0].strip(): r[i].strip() for r in rows[1:] if len(r) > i and r[0].strip() and r[i].strip()}
+    except Exception as e:
+        print(f"  ⚠ 讀密件副本人員失敗({type(e).__name__}),本次不加密件副本")
+        return {}
+
+
 def load_org_pin_map():
     """從 Sheet「局處PIN」分頁建 局處 → PIN(放進信件按鈕網址)。讀不到回 {}(按鈕不帶 PIN,仍可手動登入)。"""
     try:
@@ -537,6 +550,7 @@ def run(outdir, mail_to=None, dry_run=False):
     groups = group_by_org(allp, verified, progress)
     org_email = load_org_email_map()
     org_pin = load_org_pin_map()
+    org_bcc = load_org_bcc_map()
 
     # 從目錄名取日期戳
     dirname = os.path.basename(outdir)
@@ -584,7 +598,8 @@ def run(outdir, mail_to=None, dry_run=False):
         details.append(info)
 
         if dry_run:
-            print(f"  [DRY-RUN] {org}: 確認 {n_confirmed} 筆 + 待人工 {n_pending} 筆 → 寄 {to}")
+            print(f"  [DRY-RUN] {org}: 確認 {n_confirmed} 筆 + 待人工 {n_pending} 筆 → 寄 {to}"
+                  + (f" ｜密件副本 {org_bcc[org]}" if not override and org_bcc.get(org) else ""))
             print(f"            主旨: {subject}")
             for p in confirmed:
                 v = p.get("_verdict", "")
@@ -604,8 +619,10 @@ def run(outdir, mail_to=None, dry_run=False):
             if fallback:
                 attachments.append(fallback)
 
+        # 密件副本:override(測試)時不帶,免得測試信寄給別人
+        bcc = None if override else org_bcc.get(org)
         try:
-            send_mail(to, subject, body, attachments)
+            send_mail(to, subject, body, attachments, bcc=bcc)
             sent += 1
             # 留存副本:relay 尚不支援 Cc,另寄一封給 config mail_copy_to(承辦看不到;override 測試時不重複寄)
             copy_to = (config.get("mail_copy_to", "") or "").strip()
