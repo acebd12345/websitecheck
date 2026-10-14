@@ -102,13 +102,13 @@ def build_pin_mail(org, pin, until):
         "<p style='font-size:9.5pt;color:#555;margin-top:0'>(連點兩下即可選取複製;或直接按下方按鈕,免輸入)</p>",
         btn,
         "<p style='font-size:10pt;color:#a32d2d;border:1px solid #a32d2d;border-radius:6px;padding:8px 10px;"
-        "background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業,<b>非社交工程(釣魚)演練</b>,"
+        "background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業,"
         "由本府信箱寄出。回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>",
         f"<p style='font-size:9pt;color:#808080'>PIN 碼每季更換一次(本組有效至 {html.escape(until)})。"
         "忘記 PIN 碼不用擔心,下次換發時會再寄給您。</p>",
     ]
     body = f"<div style='font-family:微軟正黑體,Segoe UI;font-size:11pt;line-height:1.6'>{''.join(P)}</div>"
-    subject = f"【網站外連稽核｜非社交工程演練】{org} 回饋頁專屬 PIN 碼"
+    subject = f"【網站外連稽核】{org} 回饋頁專屬 PIN 碼"
     return subject, body
 
 

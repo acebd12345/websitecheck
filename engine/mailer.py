@@ -246,7 +246,7 @@ def build_mail_html(org, problems, stamp, pin=None):
     P.append("<div style='font-size:11pt;border:2px solid #2e7d32;background:#e8f5e9;border-radius:6px;"
              "padding:8px 12px;margin:8px 0'>"
              "📌 <b>處理完即可,不用回信、不用來電。</b>系統下次掃描(約一個月內)會自動確認。<br>"
-             f"只有「您確認系統判斷錯誤」時,才需要填回饋頁:{fb_btn}"
+             f"只有「您確認系統判斷錯誤」或「承辦人員異動」時,才需要填回饋頁:{fb_btn}"
              "<span style='font-size:9.5pt;color:#555'>(點按鈕即自動登入)</span></div>")
     P.append(f"<p>依數位發展部 115 年 6 月 8 日「委外案或活動結束後未移除網址」清查事項,本次針對 "
              f"<b>{html.escape(org)}</b> 所管網站進行自動化深度掃描,發現部分外部連結已失效或出現異常情形。</p>")
@@ -255,8 +255,8 @@ def build_mail_html(org, problems, stamp, pin=None):
              "因此建議儘速確認及處理,以降低網站內容與資安風險。</p>")
     P.append(f"<p style='color:#555'>掃描日期:{today}</p>")
     P.append("<p style='font-size:10pt;color:#a32d2d;border:1px solid #a32d2d;border-radius:6px;"
-             "padding:8px 10px;background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業,"
-             "<b>非社交工程(釣魚)演練</b>;本信回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>")
+             "padding:8px 10px;background:#fcecec'>※ 本通知為臺北市政府網站對外連結稽核作業;"
+             "本信回饋頁為本府自建之 Google Apps Script 服務,可安心使用。</p>")
 
     # 一、掃描摘要
     P.append(h("掃描摘要"))
@@ -301,7 +301,7 @@ def build_mail_html(org, problems, stamp, pin=None):
              "<li style='margin-bottom:6px'>✅ <b>已移除或修正連結</b> → 不用回覆,下次掃描自動確認。</li>"
              "<li style='margin-bottom:6px'>✅ <b>「請協助人工確認」的連結開啟正常</b> → 不用處理,也不用回覆。</li></ul>")
     P.append("<div style='font-size:10.5pt;border:2px solid #1f6feb;background:#e8f0fe;border-radius:6px;"
-             "padding:8px 12px'>📝 <b>只有一種情況要填回饋頁:您確認某條連結應該保留(系統判斷錯誤)。</b>"
+             "padding:8px 12px'>📝 <b>只有兩種情況要填回饋頁:(1) 您確認某條連結應該保留(系統判斷錯誤)、(2) 承辦人員異動(更新聯絡人)。</b>"
              f"<div style='margin:8px 0 4px'>{fb_btn}</div>"
              "<div style='font-size:9.5pt;color:#555'>按鈕已帶入貴處專屬登入碼,點擊即自動登入;"
              "請勿轉寄本信予非相關人員。</div></div>")
@@ -315,8 +315,8 @@ def make_subject(org, problems, stamp):
     today = stamp or datetime.date.today().strftime("%Y-%m-%d")
     act, _u, _c = _triage(problems)
     if act:
-        return f"【網站外連稽核｜非社交工程演練】{org} 建議優先處理 {len(act)} 筆 - {today}"
-    return f"【網站外連稽核｜非社交工程演練】{org} 本次無需優先處理 - {today}"
+        return f"【網站外連稽核】{org} 建議優先處理 {len(act)} 筆 - {today}"
+    return f"【網站外連稽核】{org} 本次無需優先處理 - {today}"
 
 
 def write_org_csv(problems, out_path):
