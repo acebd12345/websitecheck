@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import socket
+import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
@@ -247,6 +248,38 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
     return external
 
 
+_SOFT_404_PATHS = ("/404.html", "/404", "/404.htm", "/error.html")
+_CURL_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+def _is_soft_404_url(url, orig_url=""):
+    """部分網站(如 travel.taipei)遇不存在路徑會 302 轉址至 /404.html 並回 HTTP 200。"""
+    if not url or url == orig_url:
+        return False
+    path = urllib.parse.urlsplit(url).path.lower()
+    return path.endswith(_SOFT_404_PATHS)
+
+
+def _curl_alive(url):
+    """Python TLS 指紋被 Cloudflare 擋 403 或 HEAD 無限轉址(如 travel.taipei)時,
+    退回系統 curl GET 複查存活與最終網址。回傳 (status_code, final_url)。"""
+    null_dev = "NUL" if os.name == "nt" else "/dev/null"
+    try:
+        r = subprocess.run(
+            ["curl", "-k", "-s", "-L", "--max-time", str(TIMEOUT),
+             "-A", _CURL_UA, "-o", null_dev, "-w", "%{http_code}\t%{url_effective}", url],
+            capture_output=True, text=True, timeout=TIMEOUT + 5)
+        parts = r.stdout.strip().split("\t")
+        code = int(parts[0]) if parts and parts[0].isdigit() else 0
+        final_url = parts[1].strip() if len(parts) > 1 and parts[1].strip() else url
+        if code == 200 and _is_soft_404_url(final_url, url):
+            return 404, final_url
+        return code, final_url
+    except Exception:
+        return 0, url
+
+
 def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     """檢查單一外部連結,回傳結果 dict(occs 為所有出現位置清單)
     content_whitelist: 確認過內容無虞的網域,跳過關鍵字檢查(仍檢查連線/狀態)
@@ -288,13 +321,35 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     wl = any(host == w or host.endswith("." + w) for w in content_whitelist)
     if gov_excl or social or wl:
         try:
-            rr = requests.head(url, timeout=TIMEOUT, headers=HEADERS, verify=False, allow_redirects=True)
-            code = rr.status_code
-            if code >= 400:  # 很多政府/CMS 伺服器不支援 HEAD(www.gov.taipei HEAD=404 但 GET=200)
-                rr = requests.get(url, timeout=TIMEOUT, headers=HEADERS, verify=False,
-                                  allow_redirects=True, stream=True)  # GET 再確認,stream 不讀 body
-                code = rr.status_code; rr.close()
+            code, final_u = 0, url
+            try:
+                rr = requests.head(url, timeout=TIMEOUT, headers=HEADERS, verify=False, allow_redirects=True)
+                code, final_u = rr.status_code, rr.url
+            except requests.exceptions.SSLError:
+                raise
+            except Exception:
+                code = 0  # HEAD 無限轉址(如 travel.taipei HEAD→/404.html 迴圈)或不支援 → 退回 GET
+            if code == 0 or code >= 400 or _is_soft_404_url(final_u, url):
+                try:
+                    rr = requests.get(url, timeout=TIMEOUT, headers=HEADERS, verify=False,
+                                      allow_redirects=True, stream=True)  # GET 再確認,stream 不讀 body
+                    code, final_u = rr.status_code, rr.url
+                    rr.close()
+                except requests.exceptions.SSLError:
+                    raise
+                except Exception:
+                    code = 0
+            if code in (0, 403):  # Python TLS 指紋被 Cloudflare 擋 403 時,退回系統 curl 複查
+                c_code, c_final = _curl_alive(url)
+                if c_code:
+                    code, final_u = c_code, c_final
+            elif code < 400 and _is_soft_404_url(final_u, url):
+                code = 404
+            if code == 0:
+                result["risk"] = "DEAD"; result["note"] = "連線失敗"
+                return result
             result["status"] = str(code)
+            result["final_url"] = final_u
             if code >= 400:
                 result["risk"] = "BROKEN"; result["note"] = f"HTTP {code}"
             else:
