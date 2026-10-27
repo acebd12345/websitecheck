@@ -156,14 +156,32 @@ def is_trusted(host):
     return host.endswith(TRUSTED_SUFFIXES)
 
 
-def fetch_page(sess, page):
+def fetch_page(sess, page, start_host=""):
     """抓一頁:靜態優先,判為 JS 空殼且未超渲染額度時升級 Playwright。
-    回傳 (最終網址, html) 或 None。(整併:讓 JS 站也爬得到內部連結)"""
+    若站內路徑 3xx 轉址至外部網域(如 /Links/go?url=...),不跟進抓取外站,
+    回傳 ("EXT_REDIRECT", 原站內URL, 外部目標URL) 交由呼叫端改列為外部連結。"""
+    cur = page
     try:
-        r = sess.get(page, timeout=TIMEOUT, verify=False)
+        for _ in range(6):
+            r = sess.get(cur, timeout=TIMEOUT, verify=False, allow_redirects=False)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                nxt = urllib.parse.urljoin(cur, r.headers["Location"].strip())
+                nxt = urllib.parse.urldefrag(nxt)[0]
+                if not nxt.lower().startswith(("http://", "https://")):
+                    return None
+                h = norm_host(nxt)
+                if start_host and h and h != start_host:
+                    return ("EXT_REDIRECT", page, nxt)
+                cur = nxt
+                continue
+            break
+        else:
+            return None
         if "html" not in r.headers.get("Content-Type", ""):
             return None
         html, final_url = r.text, r.url
+        if start_host and norm_host(final_url) != start_host:
+            return ("EXT_REDIRECT", page, final_url)
     except Exception:
         return None
     # 只有 playwright 站(ALLOW_RENDER=True)才做空殼偵測+渲染;靜態站全程靜態
@@ -188,6 +206,7 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
         links_log_path = os.path.join(config.PRIVATE_DIR, "external_links.jsonl")
     start_host = norm_host(start_url)
     seen_pages = {start_url}
+    referrer = {}  # 站內 URL -> {"found_on": 來源頁, "page_title": 來源標題, "anchor": 連結文字}
     external = {}
     frontier = [start_url]
     sess = requests.Session()
@@ -196,7 +215,7 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
     sess.mount("https://", adapter)
     sess.mount("http://", adapter)
     pages_done = 0
-    _reset_render_budget()  # 每站重置渲染額度
+    _reset_render_budget()  # 每站重置額度
     links_log = open(links_log_path, "w", encoding="utf-8")
 
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -204,8 +223,26 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
             batch = frontier[: min(40, max_pages - pages_done)]
             frontier = frontier[len(batch):]
             next_frontier = []
-            for res in ex.map(lambda p: fetch_page(sess, p), batch):
+            for res in ex.map(lambda p: fetch_page(sess, p, start_host), batch):
                 if res is None:
+                    continue
+                if len(res) == 3 and res[0] == "EXT_REDIRECT":
+                    _, orig_page, ext_url = res
+                    # 若起始首頁本身轉址(如裸域->www),同步更新 start_host 重新抓首頁
+                    if pages_done == 0 and orig_page == start_url:
+                        start_host = norm_host(ext_url)
+                        seen_pages.add(ext_url)
+                        next_frontier.append(ext_url)
+                        continue
+                    ext_host = norm_host(ext_url)
+                    if _valid_host(ext_host) and orig_page in referrer:
+                        occ = referrer[orig_page]
+                        occs = external.setdefault(ext_url, [])
+                        if len(occs) < 50 and not any(o["found_on"] == occ["found_on"] for o in occs):
+                            occs.append(occ)
+                            links_log.write(json.dumps(
+                                {"url": ext_url, **occ}, ensure_ascii=False) + "\n")
+                            links_log.flush()
                     continue
                 final_url, html = res
                 pages_done += 1
@@ -226,6 +263,8 @@ def crawl_internal(start_url, max_pages, links_log_path=None):
                     if host == start_host:
                         if absu not in seen_pages and not _is_pagination_url(absu):
                             seen_pages.add(absu)
+                            referrer[absu] = {"found_on": final_url, "page_title": page_title,
+                                              "anchor": a.get_text(strip=True)[:50]}
                             next_frontier.append(absu)
                     else:
                         occ = {"found_on": final_url, "page_title": page_title,
