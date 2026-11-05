@@ -62,6 +62,8 @@ DEFAULTS = {
         "accessibility.moda.gov.tw", "pcc.gov.tw", "web.pcc.gov.tw",
         "crazydomains.com", "twitter.com", "x.com", "www-ws.gov.taipei",
     ],
+    # 手動補充資安/涉詐封鎖網域(可空;由 sec_watch 併入 gov_blacklist.json)
+    "gov_blacklist_extra": [],
 }
 
 _cache_mem = None  # 每行程讀一次快取檔
@@ -90,7 +92,7 @@ def refresh():
         with open(CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
         _cache_mem = found
-        missing = [k for k in DEFAULTS if k not in found]
+        missing = [k for k in DEFAULTS if DEFAULTS[k] and k not in found]
         msg = f"掃描設定:Sheet 讀到 {len(found)} 組參數"
         if missing:
             msg += f",缺 {','.join(missing)}(用內建預設)"

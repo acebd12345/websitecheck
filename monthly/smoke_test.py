@@ -8,6 +8,12 @@ import importlib
 import os
 import sys
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+for _p in (_ROOT, _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 sys.stdout.reconfigure(encoding="utf-8")
 ok = True
 
@@ -30,7 +36,7 @@ for pkg in ["openpyxl", "gspread", "requests", "bs4", "google.auth"]:
 
 # 2. 本專案模組
 for mod in ["config", "scan_settings", "webcheck_ai", "ga_traffic", "sync_config",
-            "update_excel", "node_check", "deep_check", "probe_method"]:
+            "update_excel", "node_check", "deep_check", "probe_method", "engine.sec_watch"]:
     try:
         importlib.import_module(mod)
         check(f"模組 {mod}", True)

@@ -126,12 +126,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def mask_pii(text: str) -> str:
+    """送交外部或本地端 AI 模型前，遮蔽可辨識個人資料（Email、電話、身分證字號），落實個資最小化與預設保護。"""
+    if not text:
+        return ""
+    # 遮蔽 Email（保留網域供判讀是否為公務或外部信箱，遮蔽帳號名）
+    text = re.sub(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", r"[EMAIL]@\1", text)
+    # 遮蔽臺灣身分證字號 / 居留證號
+    text = re.sub(r"\b[A-Z][1289]\d{8}\b", "[ID]", text)
+    # 遮蔽臺灣手機號碼 (09xx-xxx-xxx / 09xxxxxxxx)
+    text = re.sub(r"\b09\d{2}[-\s]?\d{3}[-\s]?\d{3}\b", "[MOBILE]", text)
+    return text
+
+
 def ask_ai(question: str, page_text: str, url: str) -> str:
     """把網頁文字與問題送給 AI 判讀, 回傳結果。
     依 config 的 ai_provider 切換三大家:
       openai    OpenAI 相容(地端 vLLM/Ollama, 或 OpenAI/OpenRouter/Groq 雲端)
       anthropic 雲端 Claude(官方 SDK)
       gemini    雲端 Google Gemini(OpenAI 相容端點)"""
+    page_text = mask_pii(page_text)
     if len(page_text) > MAX_CONTENT_CHARS:
         page_text = page_text[:MAX_CONTENT_CHARS] + "\n...(內容過長已截斷)"
     user = f"網頁網址: {url}\n\n網頁內容如下:\n{page_text}\n\n問題: {question}"

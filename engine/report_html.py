@@ -175,6 +175,8 @@ def _load_all_verified():
                     "type": e.get("type", ""),
                     "ai_reason": e.get("ai_reason", ""),
                     "evidence": e.get("evidence", ""),
+                    "ai_model": e.get("ai_model", ""),
+                    "verified_at": e.get("verified_at", ""),
                     "_stamp": ts,
                 }
     return verified
@@ -400,6 +402,18 @@ def _compliance_section(comp_data):
                           f"爬 {deep.get('pages', 0)} 頁，失效 {len(bi)} 筆"))
             items.append(("下載文件通用格式", len(ou) == 0,
                           f"Office 缺 PDF/ODF {len(ou)} 筆"))
+
+        ts = r.get("tech_security")
+        if ts:
+            stack_str = ts.get("stack_summary") or ts.get("arch_category") or ""
+            if ts.get("php_link_only_false_positive"):
+                stack_str += "（非 PHP，僅頁尾/內文含外部 .php 連結）"
+            if stack_str:
+                items.append(("系統語言與底層架構", True, stack_str))
+            for iss in ts.get("issues", []):
+                lvl = iss.get("level", "warn")
+                ok_val = False if lvl == "high" else (None if lvl == "warn" else True)
+                items.append((iss.get("item", "資安標頭檢視"), ok_val, iss.get("detail", "")))
 
     ai_results = comp_data.get("ai", [])
 

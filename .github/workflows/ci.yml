@@ -41,12 +41,13 @@ jobs:
           import config
           import scan_settings
           # 詞庫絕不允許為空:無 Sheet/無快取時必須退回內建預設
-          for k in scan_settings.DEFAULTS:
-              assert scan_settings.get(k), f"詞庫 {k} 為空"
+          for k, v in scan_settings.DEFAULTS.items():
+              if v:
+                  assert scan_settings.get(k), f"詞庫 {k} 為空"
           import audit_links
           assert audit_links.SUSPICIOUS_KEYWORDS and audit_links.KEYWORD_PATTERNS
           assert len(audit_links.PAGINATION_PARAMS) >= 8
-          from engine import crawl, scan, dates, fetch_layered, page_budget, full_overnight, report_html, mailer, compliance, schedule
+          from engine import crawl, scan, dates, fetch_layered, page_budget, full_overnight, report_html, mailer, compliance, schedule, sec_watch
           import webcheck_ai, deep_check, sync_config, update_excel, node_check, ga_traffic, probe_method
           print("全模組載入 OK(fallback 設定)")
           EOF

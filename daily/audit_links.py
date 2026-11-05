@@ -339,6 +339,31 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
     if any(host == w or host.endswith("." + w) for w in skip_hosts):
         result["note"] = "免檢名單:已人工確認正常(網站有防爬蟲機制),略過檢測"
         return result
+    # 0.5 誤貼防毒信件追蹤包裝網址(如趨勢科技 TrendMicro ClickTime)
+    if "trendmicro.com" in host and "/wis/clicktime/" in url.lower():
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        orig_u = urllib.parse.unquote(qs.get("url", [""])[0])
+        result["risk"] = "BROKEN"
+        result["status"] = "400(防毒包裝網址)"
+        result["note"] = f"誤貼趨勢科技防毒信件追蹤網址,請改回原網址: {orig_u}" if orig_u else "誤貼趨勢科技防毒信件追蹤網址,請改回原目標網址"
+        return result
+    gov_excl = host.endswith(GOV_EXCLUSIVE_SUFFIXES)
+    wl = any(host == w or host.endswith("." + w) for w in content_whitelist)
+    # 0.6 政府 165 反詐騙 / 資安通報涉詐黑名單(跳過政府專屬域與白名單;先於 DNS 以免 RPZ 停止解析被歸為一般 DEAD)
+    if not gov_excl and not wl:
+        try:
+            from engine.sec_watch import match_blacklist, is_antifraud_context
+            bl_hit = match_blacklist(url, extra_whitelist=content_whitelist)
+            if bl_hit:
+                result["risk"] = "SUSPICIOUS"
+                if is_antifraud_context(occs):
+                    # 反詐宣導頁列舉之詐騙網址:仍列可疑,但不保送 A,交由 AI 複查/人工確認
+                    result["note"] = f"疑似反詐宣導頁列舉之165涉詐網域,請人工確認是否為宣導範例({bl_hit.get('domain')}｜來源:{bl_hit.get('src')})"
+                else:
+                    result["note"] = f"命中政府165/資安通報涉詐黑名單({bl_hit.get('domain')}｜來源:{bl_hit.get('src')})"
+                return result
+        except Exception:
+            pass
     # 1. DNS 解析
     try:
         socket.getaddrinfo(host, None)
@@ -355,9 +380,7 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
         return result
     # 1.5 政府專屬域 / 社群短網址 / 白名單:只驗存活,跳過內容抓取與關鍵字掃描
     #     (政府專屬域民間註冊不到→不可能被搶註;社群短網址重導為設計行為;白名單已人工確認無虞)
-    gov_excl = host.endswith(GOV_EXCLUSIVE_SUFFIXES)
     social = any(host == s or host.endswith("." + s) for s in SOCIAL_SKIP_HOSTS)
-    wl = any(host == w or host.endswith("." + w) for w in content_whitelist)
     if gov_excl or social or wl:
         try:
             code, final_u = 0, url
@@ -391,6 +414,9 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
             result["final_url"] = final_u
             if code >= 400:
                 result["risk"] = "BROKEN"; result["note"] = f"HTTP {code}"
+            elif "accounts.google.com" in norm_host(final_u) or "/servicelogin" in final_u.lower():
+                result["risk"] = "BROKEN"
+                result["note"] = "跳轉 Google 登入頁(目標 Google Sites/雲端檔案未開放公開檢視權限)"
             else:
                 result["note"] = ("政府專屬網域(民間不可註冊、不可能被搶註),僅驗存活" if gov_excl
                                   else "白名單(已確認內容無虞),僅驗存活" if wl
@@ -408,6 +434,17 @@ def check_external(url, occs, content_whitelist=(), skip_hosts=()):
         final_host = norm_host(r.url)
         if final_host and final_host != host:
             result["final_host_changed"] = f"{host} -> {final_host}"
+            final_wl = any(final_host == w or final_host.endswith("." + w) for w in content_whitelist)
+            if not final_host.endswith(GOV_EXCLUSIVE_SUFFIXES) and not final_wl:
+                try:
+                    from engine.sec_watch import match_blacklist
+                    bl_hit2 = match_blacklist(r.url, extra_whitelist=content_whitelist)
+                    if bl_hit2:
+                        result["risk"] = "SUSPICIOUS"
+                        result["note"] = f"轉址後命中政府165/資安通報涉詐黑名單({bl_hit2.get('domain')}｜來源:{bl_hit2.get('src')})"
+                        return result
+                except Exception:
+                    pass
         # 3. 內容檢查
         body_lower = ""
         title = ""

@@ -55,22 +55,27 @@ def read_sheet():
     return reg
 
 
-def write_sheet(url_pages):
+def write_sheet(url_pages, url_tech=None):
     """把新頁數寫回 Sheet「頁數」欄(+「頁數更新日」),URL 對鍵、只在變大時更新。
+    若傳入 url_tech ({url: stack_summary})，同步非破壞更新「系統語言與架構」欄。
     回傳更新筆數。"""
     import gspread
     ws = _ws()
     vals = ws.get_all_values()
     hdr = vals[0]
-    for col in ["頁數", "頁數更新日"]:
+    req_cols = ["頁數", "頁數更新日"]
+    if url_tech:
+        req_cols.append("系統語言與架構")
+    for col in req_cols:
         if col not in hdr:
             if ws.col_count < len(hdr) + 1:
                 ws.add_cols(1)
             ws.update_cell(1, len(hdr) + 1, col)
             vals = ws.get_all_values(); hdr = vals[0]
     iu, ip, idt = hdr.index("網址"), hdr.index("頁數"), hdr.index("頁數更新日")
+    itech = hdr.index("系統語言與架構") if (url_tech and "系統語言與架構" in hdr) else None
     today = datetime.date.today().isoformat()
-    colp, cold = [], []
+    colp, cold, colt = [], [], []
     changed = 0
     for r in vals[1:]:
         u = r[iu].strip() if len(r) > iu else ""
@@ -81,8 +86,15 @@ def write_sheet(url_pages):
         else:
             colp.append([r[ip] if len(r) > ip else ""])
             cold.append([r[idt] if len(r) > idt else ""])
+        if itech is not None:
+            t_val = (url_tech or {}).get(u, "").strip()
+            cur_t = r[itech].strip() if len(r) > itech else ""
+            colt.append([t_val if t_val else cur_t])
     clp = gspread.utils.rowcol_to_a1(1, ip + 1).rstrip("1")
     cld = gspread.utils.rowcol_to_a1(1, idt + 1).rstrip("1")
     ws.update(values=colp, range_name=f"{clp}2:{clp}{len(vals)}")
     ws.update(values=cold, range_name=f"{cld}2:{cld}{len(vals)}")
+    if itech is not None and colt:
+        clt = gspread.utils.rowcol_to_a1(1, itech + 1).rstrip("1")
+        ws.update(values=colt, range_name=f"{clt}2:{clt}{len(vals)}")
     return changed

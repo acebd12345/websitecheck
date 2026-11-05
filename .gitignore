@@ -23,11 +23,16 @@ external_links.jsonl
 *.zip
 *.pptx
 *.pdf
+*.docx
+*.odt
+*.mp4
+backup_*.json
 
 # ===== 暫存 / 快取 =====
 __pycache__/
 *.pyc
 .claude/
+.agent/
 qa_slides/
 build/
 dist/

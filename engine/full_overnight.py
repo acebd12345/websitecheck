@@ -158,7 +158,7 @@ def ai_verify(url):
     text = webcheck_ai.html_to_text(html)[:4000]
     q = ("以下是政府網站連到的外部連結內容,判斷屬於:A=線上賭博/色情/博弈站(含被搶註導向)"
          "B=網域停放/出售頁 C=正當內容(政府/新聞/藝文/防治宣導,關鍵字只是內文提到)。"
-         "防治/反毒/衛教/藝評都算C。只回代號+一句理由。")
+         "請依網頁全文脈絡判斷,不得僅因單一詞彙直接歸類;若屬反毒/防詐/衛教/藝文報導(非招攬賭博色情)則判C。只回代號+一句理由。")
     try:
         ans = webcheck_ai.ask_ai(q, text, url).strip()
         v = re.search(r"[ABC]", ans)
@@ -195,9 +195,14 @@ def main():
     BAD_KW = _build_bad_kw()   # refresh 後重建(模組載入時建的可能是舊快取)
     print(ss_msg, flush=True)
 
-    # 站清單快照:Sheet「府內網站表」→ 本機CSV。唯一事實來源在 Sheet,
-    # 改站清單/網址/抓取方式只改 Sheet,這裡每次執行前自動下載;失敗沿用舊快照。
+    # 站清單快照與 165 黑名單:僅在非 --verify 模式啟動時同步;失敗沿用舊快取。
     if not args.verify:
+        try:
+            from engine import sec_watch
+            _, bl_msg = sec_watch.refresh_blacklist()
+            print(bl_msg, flush=True)
+        except Exception as e:
+            print(f"[警告] 政府165黑名單同步略過({type(e).__name__})", flush=True)
         try:
             n = page_budget.refresh_csv(CSV_LIST)
             print(f"站清單快照:已從 Sheet 更新({n} 站)", flush=True)
@@ -285,6 +290,7 @@ def main():
                 print(f"[警告] 讀 Sheet 頁數欄失敗({type(e).__name__}),全用首掃上限 {args.max_pages}", flush=True)
                 reg = {}
         new_pages = {}
+        new_tech = {}
         n_known = 0
         tasks, skipped = [], []
         for name,url,org,method,is_comp in allsites:
@@ -327,6 +333,9 @@ def main():
                 json.dump(prog, open(progress,"w",encoding="utf-8"), ensure_ascii=False)
                 if r.get("status") == "ok":
                     new_pages[r["url"]] = r.get("pages", 0)   # 本次真實頁數,結束寫回 Sheet
+                    ts = (r.get("compliance") or {}).get("tech_security") or {}
+                    if ts.get("stack_summary"):
+                        new_tech[r["url"]] = ts["stack_summary"]
                 done += 1
                 rounds = r.get("rounds", 0)
                 mark = f"(加碼{rounds}次→{r.get('final_cap')})" if rounds else ""
@@ -339,8 +348,8 @@ def main():
             print(f"\n[force-cap] 跳過頁數寫回 Sheet(淺掃頁數無參考價值)", flush=True)
         else:
             try:
-                chg = page_budget.write_sheet(new_pages)
-                print(f"\n頁數已寫回 Sheet:本次 {len(new_pages)} 站,更新記錄 {chg} 站", flush=True)
+                chg = page_budget.write_sheet(new_pages, url_tech=new_tech)
+                print(f"\n頁數與系統架構已寫回 Sheet:本次 {len(new_pages)} 站,更新頁數記錄 {chg} 站,識別架構 {len(new_tech)} 站", flush=True)
             except Exception as e:
                 print(f"\n[警告] 頁數寫回 Sheet 失敗({type(e).__name__});頁數仍存於 progress.json", flush=True)
         # ── 合規結果蒐集 → compliance.json ──
@@ -391,32 +400,44 @@ def main():
     print(f"===== 階段2/3:AI 複查 + 型態確認 {len(susp)} 筆 SUSPICIOUS =====", flush=True)
     verified = []
     for i,(u,r) in enumerate(susp.items(),1):
-        # 根路徑加驗圈到的:關鍵字在根路徑,深層頁可能 404/乾淨,AI 要驗根路徑才看得到證據
-        vu = u
-        if "根路徑" in (r.get("note") or ""):
-            pu = urllib.parse.urlparse(u)
-            vu = f"{pu.scheme or 'https'}://{pu.netloc}/"
-        verdict, reason, html = ai_verify(vu)
-        ctype, cevidence = ("", "")
-        if verdict in ("A","B") and html:
-            ctype, cevidence = characterize(u, html)
-        elif verdict in ("A","B"):
-            ctype, cevidence = "停放/失效", reason
+        # 政府 165 / 資安通報黑名單直接命中者:保送判 A(免因 TWNIC RPZ 停止解析或 Cloudflare 阻擋而被降級)
+        if "命中政府165/資安通報涉詐黑名單" in (r.get("note") or ""):
+            verdict, reason, html = "A", r.get("note", "命中政府165涉詐黑名單"), ""
+            ctype, cevidence = "政府165通報涉詐網域", r.get("note", "")
+        else:
+            # 根路徑加驗圈到的:關鍵字在根路徑,深層頁可能 404/乾淨,AI 要驗根路徑才看得到證據
+            vu = u
+            if "根路徑" in (r.get("note") or ""):
+                pu = urllib.parse.urlparse(u)
+                vu = f"{pu.scheme or 'https'}://{pu.netloc}/"
+            verdict, reason, html = ai_verify(vu)
+            ctype, cevidence = ("", "")
+            if verdict in ("A","B") and html:
+                ctype, cevidence = characterize(u, html)
+            elif verdict in ("A","B"):
+                ctype, cevidence = "停放/失效", reason
         verified.append({"ai_verdict":verdict,"type":ctype,"url":u,"site":r["site_name"],"org":r.get("org",""),
-                         "found_on":r.get("found_on",""),"kw":r["note"],"ai_reason":reason,"evidence":cevidence})
+                         "found_on":r.get("found_on",""),"kw":r["note"],"ai_reason":reason,"evidence":cevidence,
+                         "ai_model":getattr(config, "AI_MODEL", ""),"verified_at":datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
         tag={"A":"🔴","B":"🟠","C":"🟢","?":"❓"}.get(verdict,verdict)
         print(f"[階段2/3 {i}/{len(susp)}] {tag}{verdict} {ctype:12} {r['site_name'][:16]:18} {u[:44]}", flush=True)
         json.dump(verified, open(os.path.join(outdir,"suspicious_verified.json"),"w",encoding="utf-8"), ensure_ascii=False, indent=1)
 
     # ── 階段4 ──
     with open(os.path.join(outdir,"suspicious_verified.csv"),"w",newline="",encoding="utf-8-sig") as f:
-        w=csv.DictWriter(f, fieldnames=["ai_verdict","type","url","site","org","found_on","kw","ai_reason","evidence"]); w.writeheader(); w.writerows(verified)
+        w=csv.DictWriter(f, fieldnames=["ai_verdict","type","url","site","org","found_on","kw","ai_reason","evidence","ai_model","verified_at"], extrasaction="ignore"); w.writeheader(); w.writerows(verified)
     confirmed = [v for v in verified if v["ai_verdict"]=="A" or (v["ai_verdict"]=="B" and v["type"] not in ("停放/失效","待人工"))]
     from collections import Counter
     ok=[p for p in prog if p.get("status")=="ok"]
+    arch_counter = Counter(
+        ((p.get("compliance") or {}).get("tech_security") or {}).get("arch_category")
+        for p in ok
+        if ((p.get("compliance") or {}).get("tech_security") or {}).get("arch_category")
+    )
     summary={"stamp":stamp,"mode":"verify" if args.verify else "full","sites_scanned":len(ok),"skipped":len(skipped),
              "total_anomalies":len(allp),
              "by_risk":dict(Counter(r["risk"] for r in allp)),
+             "by_arch":dict(arch_counter),
              "suspicious_checked":len(susp),
              "ai_verdicts":dict(Counter(v["ai_verdict"] for v in verified)),
              "confirmed_hijacks":len([v for v in verified if v["ai_verdict"]=="A"]),
