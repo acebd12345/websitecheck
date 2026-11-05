@@ -1,58 +1,49 @@
 # websitecheck 專案架構文件
 
 > 本文件由程式碼全面走讀後整理，供日後回來快速上手。**只描述現況**。
-> 最近更新（2026-07）：試算表收斂為 4 分頁（府內網站表為單一母表、主設定表退役）、詞庫/站清單/分頁參數單一來源化、`full_overnight --verify`、`report_html` 報告產生器、CI/CD、Gemini 供應商、局處寄信 Sheet 公式、寄信搬進深掃 `engine/mailer.py`（按局處彙整、吃 AI 複查）、daily 退役、**Phase 2：`monthly_check.py` 退役、合規檢核搬進 `engine/compliance.py`（深掃 worker 整合）、`report_html` 加合規檢核紅綠燈、`update_excel` 改讀 compliance.json、`full_overnight --force-cap`**。
+> 最近更新（2026-11）：
+> - **Phase 3（資安情資感知與被動架構/標頭資安檢測）**：新增 `engine/sec_watch.py`（Track 1：自動同步 `data.gov.tw` 165 反詐涉詐/博弈黑名單，先於 DNS O(1) 攔截並辨識反詐宣導頁、階段 2 保送判 A；Track 2：巡檢 TWCERT RSS 或手動公文，經 AI/啟發式轉為宣告式清查任務 `TASK_RULES`，含 `sre_parse` ReDoS 防護、市政樣板過寬規則剔除與嚴格 AST 白名單）、`compliance.check_tech_and_security`（零額外請求識別 11 大類系統語言架構與 PHP EOL / CSP / Session Cookie / CKEditor 等被動資安檢測，並自動寫回 Sheet「系統語言與架構」欄）、`webcheck_ai.mask_pii` 送 AI 前個資遮蔽。
+> - **寄信中繼與回饋閉環（2026-08~10）**：新增府內寄信中繼 `deploy/mailrelay/relay.py`（`method=relay`，支援多 token 與 CC/BCC）、稽核信三桶風險分流＋`#pin=` 自動登入回饋頁（`engine/pin_mailer.py` 每季輪替）、多收件人與密件副本（BCC）、單站報告轉 PDF 附件、`engine/whitelist_recheck.py` 月度白名單健檢，以及 `audit_links.py` 攔截站內 3xx 跨網域跳板（`EXT_REDIRECT`）、趨勢科技 ClickTime 包裝網址、Cloudflare 403 `curl` 複查與 `service.taipei` SPA 404 瀏覽器複查。
+> - **Phase 1~2 基礎（2026-07）**：試算表以「府內網站表」為單一母表、詞庫/分頁/白名單單一來源化（`scan_settings.py`）、`monthly_check.py` 退役併入 `engine/compliance.py`、`report_html.py` 報告產生器、`schedule.py` 月度排程、GitHub Actions CI。
 
 ---
 
 ## 1. 這個專案在解決什麼問題（白話版）
 
-臺北市政府（資訊局）要定期確認轄下數百個網站「還健康、沒出事」。實務上有兩種痛點：
+臺北市政府（資訊局）要定期確認轄下 466 個網站「還健康、沒出事」。實務上有三大核心任務：
 
-1. **每月合規檢核**——每個機關網站要符合一堆規定：HTTPS 憑證有沒有過期、有沒有轉址、
-   手機版（RWD）、站內搜尋、無障礙標章、失效連結、最新消息有沒有在更新……
-   以前要人工一站一站點開檢查，很花時間。
+1. **每月合規與被動資安體檢**——每個機關網站要符合規定：HTTPS 憑證效期、HTTP→HTTPS 轉址、HSTS、手機版（RWD）、站內搜尋、無障礙標章、首頁與站內失效連結、下載檔提供 ODF/PDF 通用格式、最新消息更新時效，以及**被動識別網站底層語言框架（PHP / ASP.NET / Java / Node.js 等 11 類）與 HTTP 資安標頭／過期元件風險**。
+2. **外部連結網域被搶註 / 掛馬 / 涉詐攔截**（最核心也最花心力的部分）——
+   政府網站常在新聞稿、活動頁連到「當年委外廠商的活動官網」。活動結束、網域過期釋出後，**博弈/色情/詐騙集團會把過期網域註冊走**，導致政府網站無意間幫賭場或詐騙站導流。數發部 115/6/8 發文要求各機關清查「委外案或活動結束後未移除的網址」，本專案將清查自動化：
+   **爬完整站 → 收集所有對外連結（含站內 3xx 轉址跳板） → 比對 165 反詐黑名單 + 檢測存活與賭博/色情/停放關鍵字 → 地端/雲端 AI 二次複查 → 按局處自動寄發通知信與回饋頁連結**。
+3. **突發資安情資感知與全府快速清查（`sec_watch`）**——
+   當 TWCERT/CC 發布新漏洞警訊或上級交辦臨時清查公文（例如清查全府網站是否引用遭污染的 `polyfill.io` 或特定高風險元件）時，自動判讀是否可從外部網頁檢測、產出經安全沙盒驗證的宣告式清查規則並寄信通知管理員，管理員一鍵即可在 1~2 分鐘內掃完全府 466 站首頁並匯出報表。
 
-2. **網域被搶註 / 掛馬**（這是這個專案最核心、也最花心力的部分）——
-   政府網站常在新聞稿、活動頁裡連到「當年委外廠商的活動官網」。活動結束、網域到期沒續約後，
-   **博弈/色情集團會把這個過期網域註冊走**，於是政府網站等於在幫賭場/色情站導流。
-   數發部 115/6/8 發文要求各機關清查「委外案或活動結束後未移除的網址」，這個專案就是把清查自動化：
-   **爬完整站 → 收集所有對外連結 → 逐一檢查連結目標是不是失效、被搶註、變成賭博色情或停放頁**，
-   有問題就寄信通知該機關。
-
-**難點在於「不能亂喊狼來了」**：反毒宣導頁會提到「賭博」、藝文報導會出現「色情」字眼、
-法文網頁的 `spécialiste` 會誤撞 `cialis`——單靠關鍵字比對會製造大量誤報，讓報告失去公信力。
-因此本專案的一大重心是**兩關把誤報壓下去**（機械圈選 → 地端 AI 讀全文複查），詳見 §5。
+**核心難點在於「不能亂喊狼來了」**：反毒/反詐宣導頁會提到「賭博/詐騙」、藝文報導會出現敏感字眼、法文網頁的 `spécialiste` 會誤撞 `cialis`、ASP.NET 網站頁尾連到友站 `.php` 不代表它是 PHP 網站——因此本專案透過**多層防誤報機制**（詳見 §5）確保報告公信力。
 
 ---
 
-## 2. 兩大子系統 + 一個統一引擎
+## 2. 子系統分工與單一事實來源
 
 | 子系統 | 資料夾 | 頻率 | 做什麼 | 產出 |
 |---|---|---|---|---|
-| ~~每月檢核~~ | `monthly/` | **主流程已退役** | `monthly_check.py` 已退役(git rm)；檢查邏輯搬進 `engine/compliance.py`（深掃 worker 整合）。`deep_check.py` 保留(被 compliance 匯入)、`update_excel.py` 讀 compliance.json 產 Excel | 檢核表 Excel(由 update_excel 產) |
-| ~~每日連結稽核~~ | `daily/` | **已退役** | 掃描引擎 `audit_links.py` 保留；寄信併入 `engine/mailer.py` | — |
-| **統一引擎** | `engine/` | 手動 / 整夜 / 排程 | 靜態優先抓取地基 + 全 466 站深度稽核 + **按局處寄信（AI 複查後）** + HTML 報告 | reports/ 下 json/csv + Email |
+| **合規檢核輔助** | `monthly/` | 每月 / 隨深掃 | `monthly_check.py` 已退役；檢查邏輯搬進 `engine/compliance.py`。保留 `deep_check.py`（被 compliance 匯入）、`update_excel.py`（讀 `compliance.json` 產 Excel）、`webcheck_ai.py`（共用 AI 與 `mask_pii`） | 檢核表 Excel |
+| **外連稽核核心** | `daily/` | 隨深掃呼叫 | 連結稽核引擎 `audit_links.py`（純引擎模組，寄信已併入 `engine/mailer.py`） | — |
+| **統一引擎** | `engine/` | 手動 / 整夜 / 排程 | 靜態優先分層抓取 + 全 466 站四階段深度稽核 + 合規與架構資安檢測 + 165 黑名單與資安警訊感知 (`sec_watch`) + 按局處寄信 (`mailer`) + HTML 報告 (`report_html`) | `private/reports/` + Email |
+| **部署與寄信中繼** | `deploy/` | 常駐 / CI 後更新 | `mailrelay/relay.py` 府內 HTTPS→SMTP 寄信中繼服務、`hermes_update.sh` 主機拉取更新腳本 | — |
 
-各子系統**共用同一份設定 `config.py`、同一個 Google 服務帳戶、同一張試算表**。
-`engine/` 把 `daily/audit_links.py`（連結稽核引擎）與 `monthly`（AI 判讀、日期抽取、站內深爬）的能力
-接起來，疊出「全站深度稽核 + 合規檢核 + 按局處寄信」的完整管線。
-
-### 資料的單一事實來源：Google 試算表「府內網站表」
-唯一手動維護的母表（466 站），程式端集中在 `config.SITE_LIST_WS`。試算表共 4 張分頁：
+### 資料的單一事實來源：Google 試算表
+全系統共用同一份 `config.py`、同一個 Google 服務帳戶與同一張 Google 試算表（共 5 張主要分頁）：
 
 | 分頁 | 角色 |
 |---|---|
-| **府內網站表** | 站清單母表：網站名稱、網址、局處、`內容抓取方式`、`合規檢核`（是=納入月度合規檢核，可增減，取代舊 `web_check14站`）、`頁數`（自適應回填）、`局處Email`（XLOOKUP 計算欄，見下）|
-| **掃描設定** | 詞庫（賭博/色情/停放）與分頁參數，`scan_settings` 啟動時拉取 |
-| **局處聯絡人員表** | 局處 → 管理人/分機/Email，寄信 per-局處 用（衛星表，以局處對鍵）|
-| **月度掃描排程** | 466 站分 30 天輪替計畫 |
+| **府內網站表** | 唯一手動維護的 466 站母表（`config.SITE_LIST_WS`）：網站名稱、網址、局處、`內容抓取方式`、`合規檢核`（`是`=納入月度深度合規與 AI 題目）、`AI判讀題目`、`頁數`＆`頁數更新日`（深掃自動回填）、`系統語言與架構`（深掃自動回填）、`局處Email`（XLOOKUP 公式欄） |
+| **掃描設定** | 詞庫（`suspicious_keywords`、`parked_keywords`、`characterize_extra_keywords`、`benign_phrases`）、分頁參數（`pagination_params`）、白名單（`content_whitelist`）、免檢名單（`skip_hosts`）與手動補充黑名單（`gov_blacklist_extra`），由 `scan_settings.py` 啟動時拉取快取 |
+| **局處聯絡人員表** | 局處 → 承辦人/分機/Email（支援多格承辦串接）與 `密件副本人員`（BCC），供 `mailer.py` 與母表 XLOOKUP 使用 |
+| **局處PIN** | 局處 → 回饋頁專屬 8 碼 PIN 與效期（由 `engine/pin_mailer.py` 產生與每季輪替，`mailer.py` 自動讀取並嵌入信件按鈕 `#pin=`） |
+| **月度掃描排程** | 466 站分 30 天輪替計畫（由 `engine/schedule.py --rebuild` 自動計算寫回） |
 
-> 原「主設定表」（14 站合規子集）已**併入府內網站表退役**——合規站改由 `合規檢核=是` 旗標標記；欄位重複、兩表漂移的問題消除。
-
-- `monthly/sync_config.py` 讀「府內網站表 篩 `合規檢核=是`」產出：`private/sites.json`（合規站清單）。~~`domains.txt` 產出已移除~~（寄信改由 `engine/mailer.py` 直接讀 Sheet `局處Email` 欄）。
-- 大量掃描讀本機快照 `private/TCGweb_466站對照清單_v2.csv`——**`full_overnight` 每次執行前自動從府內網站表重新下載**（`page_budget.refresh_csv`，失敗沿用舊快照），故改站清單/網址/抓取方式**只改 Sheet 即可**，快照只是快取。
-- **局處→寄信對照（Sheet 公式，零程式）**：府內網站表的 `局處Email` 欄用 `XLOOKUP` 查局處聯絡人員表，查不到自動落預設信箱；局處聯絡人員表另有偵測公式，即時列出「母表有、聯絡人表沒建」的局處。局處清單只在母表維護，聯絡人表用局處對鍵、漏的會被抓出、寄信永遠有兜底。
+- 大量掃描讀取本機快照 `private/TCGweb_466站對照清單_v2.csv`——**`full_overnight` 與 `mailer` 執行前皆會自動從「府內網站表」重新下載**（`page_budget.refresh_csv`，原子寫入，失敗沿用舊快照），因此改站清單、抓取方式或聯絡人**只需改 Sheet**。
 
 ---
 
@@ -60,250 +51,202 @@
 
 ```
 websitecheck/
-├─ config.py                 共用設定載入器(private/config.json → 根目錄 → example)
-├─ scan_settings.py          掃描設定單一來源(Sheet「掃描設定」→ 快取 → 內建預設;詞庫/分頁參數)
+├─ config.py                 共用設定載入器(支援環境變數覆寫; private/config.json → 根目錄 → example)
+├─ scan_settings.py          掃描設定單一來源(Sheet「掃描設定」→ 快取 → 內建預設 DEFAULTS)
 ├─ config.example.json       設定範本(公開)
-├─ ~~每月檢核.bat~~ (已退役 git rm) / 每日稽核.bat
+├─ 每日稽核.bat               Windows 一鍵深掃+寄信入口
 ├─ requirements.txt
 │
-├─ monthly/   ── 合規檢核輔助（主流程已搬進 engine/compliance.py）──
-│   ├─ ~~monthly_check.py~~  已退役(git rm)；檢查邏輯搬進 engine/compliance.py
-│   ├─ deep_check.py      站內深度 BFS(≤150頁)：內部失效連結 + Office 檔缺 PDF/ODF 替代版
-│   │                     (被 engine/compliance.py import 使用)
-│   ├─ node_check.py      檢核表(一) 逐節點 AI 內容判讀
-│   ├─ ga_traffic.py      撈 GA4 screenPageViews(檢核表的「網站流量數」)
-│   ├─ probe_method.py    探測每站「該用哪種抓取方式」→ 寫回府內網站表「內容抓取方式」欄
-│   ├─ sync_config.py     府內網站表(合規檢核=是) → sites.json (domains.txt 產出已移除)
-│   ├─ update_excel.py    讀 compliance.json 產檢核表 Excel(以「網站名稱」為鍵比對工作表)
-│   ├─ webcheck_ai.py     ★ 共用 AI 模組：fetch_html / html_to_text / ask_ai
-│   │                     (支援 openai 相容 / anthropic / gemini 三家，engine 也重用它)
-│   ├─ smoke_test.py      部署冒煙測試(不寫檔、不改線上; monthly_check 已從模組清單移除)
-│   └─ 每月建立檢核表.gs   Google Apps Script(在試算表端)
+├─ monthly/   ── 合規檢核輔助與共用 AI 模組 ──
+│   ├─ deep_check.py         站內深度 BFS(≤150頁)：內部失效連結 + Office 檔缺 PDF/ODF 替代版
+│   ├─ node_check.py         檢核表(一) 逐節點 AI 內容判讀
+│   ├─ ga_traffic.py         撈 GA4 screenPageViews(檢核表的「網站流量數」)
+│   ├─ probe_method.py       探測每站抓取方式 → 寫回府內網站表「內容抓取方式」欄
+│   ├─ sync_config.py        府內網站表(合規檢核=是) → private/sites.json
+│   ├─ update_excel.py       讀 compliance.json 產檢核表 Excel(以「網站名稱」對齊工作表)
+│   ├─ webcheck_ai.py        ★ 共用 AI 模組：fetch_html / html_to_text / mask_pii / ask_ai
+│   │                        (支援 openai 相容 / anthropic / gemini，送審前自動遮蔽 Email/身分證/手機)
+│   ├─ smoke_test.py         部署冒煙測試(驗證套件、全模組匯入與設定檔)
+│   └─ 每月建立檢核表.gs      Google Apps Script(試算表端)
 │
-├─ daily/    ── 連結稽核引擎（寄信已退役，移至 engine/mailer.py）──
-│   └─ audit_links.py     ★★ 連結稽核引擎核心。爬單站 → 收外連 → 逐連結判風險。
-│                          所有搶註/賭博/色情/失效判斷、誤報防呆都在這支(見 §5)
+├─ daily/     ── 外連稽核引擎核心 ──
+│   └─ audit_links.py        ★★ 爬取單站內部頁 → 收集外連(含站內 3xx 跨網域轉址) → 逐連結判風險
 │
-├─ engine/   ── 統一引擎(整併地基) ───────────────────────────
-│   (詳見 §3.1，共 12+ 檔)
+├─ engine/    ── 統一引擎(共 14 個模組，詳見 §3.1) ──
 │
-└─ private/  ── 機敏/個資/產出，整個 gitignore ─────────────
+├─ deploy/    ── 部署與府內寄信中繼 ──
+│   ├─ hermes_update.sh      掃描主機拉取更新與環境驗證腳本
+│   └─ mailrelay/            府內寄信中繼服務(relay.py + systemd service + env 範本)
+│
+├─ docs/      ── 專案文件 ──
+│   ├─ ARCHITECTURE.md       本文件：系統全貌、資料流與設計決策
+│   ├─ SEC_INTEL_DESIGN.md   資安情資感知模組(sec_watch)雙軌設計與安全沙盒規格
+│   └─ SECURITY_CLOUD.md     上雲機敏處理指引
+│
+└─ private/   ── 機敏/個資/快取/產出，整個 gitignore ──
     ├─ config.json / ga-service-account.json
-    ├─ sites.json / nodes_map.json
-    ├─ TCGweb_466站對照清單_v2.csv   466 站離線快照(engine 大量掃描讀這支)
-    └─ reports/…                     各式報告(full_overnight_* / linkaudit_all_* / engine_run_*)
+    ├─ scan_settings_cache.json / gov_blacklist.json / sec_watch_seen.json
+    ├─ sec_tasks/            sec_watch 生成之宣告式臨時清查任務(task_<id>.py)
+    ├─ TCGweb_466站對照清單_v2.csv
+    └─ reports/ & reports_html/
 ```
 
-### 3.1 engine/ 那 12 個檔
+### 3.1 `engine/` 模組一覽（14 個檔案）
 
-分成三層：**地基（抓取）→ 中層（爬取/清單）→ 上層（驅動/剖面/報告）**。
+分成三層：**地基（抓取/情資）→ 中層（爬取/預算）→ 上層（驅動/合規/寄信/報告/排程）**。
 
-| 檔 | 層 | 職責 |
+| 檔案 | 層 | 職責 |
 |---|---|---|
-| `__init__.py` | — | 只放整併說明 docstring，無程式碼 |
-| **`fetch_layered.py`** | 地基 | ★ **靜態優先分層抓取**。先靜態抓 → `detect_shell` 判是不是 JS 空殼/frameset/內容過少 → 只有必要且 `allow_render=True` 才升級 Playwright 渲染。硬編兩個陷阱名單：`NEVER_RENDER`(wifi.taipei 渲染會撞 500)、`FORCE_MANUAL`(travel.taipei 有 Cloudflare 人機驗證) |
-| `dates.py` | 地基 | 從 HTML 抽「最新更新日期」並正規化(移植自 TCGweb 的日期抽取器) |
-| **`crawl.py`** | 中層 | 深層 BFS 爬蟲(`crawl_site`)。每頁走 `fetch_layered`，做 sitemap 優先、內/外連結拆分、同標題+分頁去重、外連狀態檢查、日期抽取。**產健康向的頁面清單**，非搶註判斷 |
-| `page_budget.py` | 中層 | 每站頁數自適應：讀/寫府內網站表「頁數」欄。`get_cap`=上次頁數+100；掃完把本次真實頁數寫回(URL 對鍵、只在變大時更新) |
-| **`scan.py`** | 上層 | 健康(停更)剖面驅動：`health_profile`(最新消息日期/停更判定/抓取方式)。`load_sites` 支援 Sheet 或 CSV。合規剖面已移除（由 `compliance.py` 完整涵蓋） |
-| **`compliance.py`** | 上層 | ★ **合規檢核模組**（原 `monthly_check.py` 邏輯搬入）。HTTPS/憑證/HSTS、RWD、站內檢索、無障礙標章、首頁連結失效、站內深爬(`deep_check`)、AI 內容判讀。基本合規 466 站都做（成本近零）；AI+deep_check 只做「合規檢核=是」的站。由 `full_overnight` worker 呼叫，產出 `compliance.json` |
-| **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核**(整夜無人值守) + `--mail` 按局處寄信 + 合規檢核整合(`compliance.py`)。`--force-cap N` 強制所有站首掃上限=N 頁（停用加碼+頁數回寫，環境驗證/淺掃用）。見 §4 |
-| **`mailer.py`** | 上層 | 深掃寄信模組：讀報告目錄按局處彙整、吃 AI 複查(C 不寄)、`--mail-to` override 收件人(鐵律)。`full_overnight --mail` 自動呼叫，也可獨立跑 `python -m engine.mailer <報告目錄>` |
-| **`report_html.py`** | 上層 | HTML 報告產生器：把掃描產出轉成單站報告(按局處歸資料夾)＋全市總報告。吃 AI 複查判定(C→附錄、A/B→置頂)；新增**合規檢核**區塊(紅綠燈表格，讀 compliance.json)。`full_overnight` 收尾自動呼叫，也可獨立跑 `python -m engine.report_html` |
-| **`schedule.py`** | 上層 | 月度掃描排程：`rebuild`(從府內網站表重算30天分批,巨站獨立日+頁數均衡裝箱,寫回Sheet)、`today_batch`(取今天Day-N該掃的站)。`full_overnight --schedule-today` 呼叫 |
-| ~~`verify_suspicious.py`~~ | — | **已移除**（2026-07，功能由 `full_overnight --verify` 取代） |
+| `__init__.py` | — | 整併說明 docstring |
+| **`fetch_layered.py`** | 地基 | ★ **靜態優先分層抓取**。先靜態抓 → `detect_shell` 判是否為 JS 空殼/frameset/內容過少 → 僅在必要且 `allow_render=True` 時升級 Playwright 渲染。內建 `NEVER_RENDER` (`wifi.taipei`) 與 `FORCE_MANUAL` (`travel.taipei`) 保護名單 |
+| `dates.py` | 地基 | 從 HTML 抽取「最新更新日期」並正規化 |
+| **`sec_watch.py`** | 地基/上層 | ★★ **政府資安情資感知模組**。Track 1：同步 165 反詐開放資料集與補充黑名單至 `private/gov_blacklist.json`（單字元來源碼低記憶體設計），供 `audit_links` O(1) 比對；Track 2：巡檢 TWCERT RSS 或手動公文，經 AI/啟發式轉為宣告式規則 `TASK_RULES`（含 ReDoS 語法樹防護、過寬規則剔除、AST 白名單），寄信通知管理員並支援 `--run-task` 全府首頁快掃 |
+| **`crawl.py`** | 中層 | 健康向深層 BFS 爬蟲（`crawl_site`），供 `scan.py` 使用 |
+| `page_budget.py` | 中層 | 每站頁數自適應與母表回寫：管理 `TCGweb_466站對照清單_v2.csv` 快照更新、`get_cap`（上次頁數+100），並在深掃後將「頁數」、「頁數更新日」與「系統語言與架構」寫回府內網站表 |
+| **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核主驅動**。整合 `audit_links`、`compliance`、`sec_watch`、`page_budget`、`report_html` 與 `mailer`。支援 `--schedule-today`、`--verify`、`--resume`、`--force-cap` |
+| **`compliance.py`** | 上層 | ★ **合規與被動式架構/資安檢測模組**。基本合規（HTTPS 憑證/轉址/HSTS、RWD、站內檢索、無障礙標章、首頁失效連結）＋ **`check_tech_and_security`（11 大類系統架構指紋識別與 PHP EOL / CSP / Session Cookie / CKEditor 等被動資安標頭檢查）** 466 站全做；`deep_check` 與 AI 題目判讀僅對「合規檢核=是」的站執行 |
+| **`mailer.py`** | 上層 | 深掃寄信模組：按局處彙整異常、過濾 AI 判 C 誤報、分成三桶（建議優先處理 / 建議更新連結 / 請協助人工確認），嵌入局處專屬 `#pin=` 回饋頁自動登入按鈕，附 CSV 與單站正式報告 PDF，支援 `outlook` / `gmail` / `relay` 與 BCC |
+| **`pin_mailer.py`** | 上層 | 產生或每季輪替各局處回饋頁 8 碼 PIN（寫入 Sheet「局處PIN」分頁，`--rotate --no-mail`） |
+| **`report_html.py`** | 上層 | HTML 報告產生器：產出按局處歸檔的單站報告（含異常連結、合規與系統架構/資安標頭紅綠燈、AI 排除誤報附錄）與全市總報告 |
+| **`schedule.py`** | 上層 | 月度掃描排程：`--rebuild`（巨站獨立日 + 貪婪裝箱均衡分 30 天寫回 Sheet）、`--today`（取出今日批次） |
+| **`whitelist_recheck.py`** | 上層 | 月度白名單健檢：每月用 Playwright 真瀏覽器重載 `skip_hosts` 免檢站，確認未失效且未出現賭博/色情關鍵字，異常時產 CSV 並寄信示警 |
+| **`scan.py`** | 上層 | 健康（停更）剖面驅動：`health_profile` 檢查各站最新消息更新時效與停更狀態 |
 
 ---
 
 ## 4. 端到端流程：資料怎麼流動
 
-### 4.1 全站深度稽核（主線，`full_overnight.py` 四階段 + 寄信）
-
-這是專案最核心的資料流。輸入 466 站 CSV（或 `--schedule-today` 只掃今天排程批次），輸出「確認的搶註/掛馬清單」+ 按局處寄信。
+### 4.1 全站深度稽核（主線，`full_overnight.py` 四階段 + 合規架構 + 寄信）
 
 ```
-府內網站表/CSV (466 站，含 內容抓取方式、頁數)
-   │  csv.DictReader，套 --org/--only/--limit 過濾
-   │  method∈{manual,疑似失效} 或 3d.taipei → 跳過(只記錄不掃)
+啟動準備：
+  1. scan_settings.refresh()          ← 從 Sheet「掃描設定」更新詞庫/白名單/skip_hosts 快取
+  2. sec_watch.refresh_blacklist()    ← 同步 data.gov.tw 165 反詐黑名單至 private/gov_blacklist.json
+  3. page_budget.refresh_csv()        ← 從 Sheet「府內網站表」下載最新 466 站快照 CSV
+   │
    ▼
-【階段1】站層級多行程平行(ProcessPoolExecutor, 每站獨立行程 max_tasks_per_child=1)
+【階段1】站層級多行程平行 (ProcessPoolExecutor, max_tasks_per_child=1)
    每站 audit_one：
-     ALLOW_RENDER = (method=="playwright")         ← 渲染只給 playwright 站
-     首掃上限 = page_budget.get_cap(頁數欄+100)    (--force-cap N 時全用 N、停用加碼)
-     ★ compliance.run_checks(站)                  ← 合規檢核(HTTPS/RWD…)整合進每站 worker
+     ALLOW_RENDER = (method == "playwright")
+     首掃上限 = page_budget.get_cap(頁數欄+100)  (--force-cap N 時固定為 N 且停用加碼)
      audit_links.audit_site(url, cap):
-        crawl_internal  BFS 爬站內頁(≤8 執行緒)，收集所有【對外】連結 + 出現位置
-                        分頁參數(page/date/…)不再往下挖，避免月曆無限頁
-        check_external  每條外連逐一判風險(見 §5 判斷樹)
-     撞上限 → 加碼 1000→3000→6000→9000 封頂，直到爬完或到頂
-     爬到 0 頁 → 開渲染重試 ≤2 次(SPA 空殼保護)
-   邊完成邊 flush：all_problems.csv(所有異常) + progress.json(每站進度)
-   收尾：把本次各站真實頁數 write_sheet 寫回府內網站表「頁數」欄
+       ├─ crawl_internal：BFS 爬站內頁(≤8 執行緒)，收集對外連結 + 攔截站內 3xx 跨網域轉址(EXT_REDIRECT)
+       ├─ check_external：每條外連逐一判風險(先比對 165 黑名單 → DNS → 存活/內容關鍵字/根路徑複查)
+       └─ _recheck_spa_404：針對 service.taipei 的 HTTP 404 以 Playwright 循序複查排除 SSR 假 404
+     撞上限 → 自動加碼 1000→3000→6000→9000 封頂；爬到 0 頁 → 開渲染重試 ≤2 次
+     ★ compliance.run_basic(url)：檢查 HTTPS/RWD/無障礙 + check_tech_and_security(11類架構與資安標頭)
+     ★ 若 合規檢核=是：加跑 compliance.run_deep(url) (站內深爬內部失效連結與 Office 檔格式)
+   收尾：
+     - page_budget.write_sheet(new_pages, url_tech=new_tech) 寫回母表「頁數」與「系統語言與架構」欄
+     - 對 合規檢核=是 且有 AI 題目的站串行執行 compliance.run_ai_checks() → 輸出 compliance.json
    ▼
-【階段2+3】對階段1 判為 SUSPICIOUS 的外連(去重後)：
-   階段2 ai_verify：實連抓內容(重試3次) → 地端 AI 判 A賭博色情 / B停放出售 / C誤報正當
-                    (「根路徑命中」的候選，改驗根路徑，因深層頁常是乾淨的)
-   階段3 characterize：AI 判 A/B 者，抓原始 HTML 判入侵型態
-                    (隱藏掛馬 hidden / 可見注入 / 網域易主 takeover / 停放失效)
-   邊做邊寫 suspicious_verified.json
+【階段2 + 3】對階段1 判為 SUSPICIOUS 的外連(去重後)：
+   ├─ 若命中政府 165 黑名單(且非反詐宣導頁)：直接保送 ai_verdict = "A" (政府165通報涉詐網域)
+   └─ 其餘候選：
+        階段2 ai_verify：實連抓內容(重試3次；根路徑命中者改抓根路徑) → AI 判 A(賭博色情) / B(停放) / C(正當誤報)
+        階段3 characterize：對 A/B 抓原始 HTML 判入侵型態(隱藏掛馬 / 網域易主 / 可見內容注入 / 停放失效)
    ▼
-【階段4】產最終報告：
-   suspicious_verified.csv   全部複查結果(含 A/B/C 判定 + 證據)
-   CONFIRMED_hijacks.csv     只留 AI 判 A(真搶註/掛馬) → 這份才是要辦的
-   summary.json              統計(掃幾站/各風險數/AI 判定分布/確認數/耗時)
+【階段4】產最終報告 + 自動銜接 HTML 報告與按局處寄信：
+   ├─ suspicious_verified.csv / CONFIRMED_hijacks.csv / compliance.json / summary.json(含 by_arch 統計)
+   ├─ report_html.generate_for_sites() → 更新 private/reports_html/ 下各局處單站報告
+   └─ 若有 --mail：呼叫 mailer.run() 按局處寄發通知信(附 CSV + 單站報告 PDF)
 ```
 
-**`--resume <dir>` 續跑**：載入該目錄 progress.json 中「非 fail」的 URL 當作 done_urls，
-掃描時跳過，`all_problems.csv` 以 append 開啟。可把整夜大掃分次補完(見本次教育局續跑)。
+### 4.2 按局處寄信與回饋閉環（`engine/mailer.py` + `deploy/mailrelay/relay.py`）
 
-### 4.2 按局處寄信（`engine/mailer.py`，深掃階段4後）
+1. **過濾與三桶分流（`_triage`）**：
+   - AI 判 `C`（誤報）直接剔除；若該局處過濾後 0 條真問題則不寄信。
+   - 其餘異常分為三桶：**建議優先處理（`act`）**（SUSPICIOUS、可能已釋出遭搶註之 DEAD、HTTP 404）、**建議更新連結（`update`）**（跨網域 REDIRECTED）、**請協助人工確認（`check`）**（政府專屬域下線、連線逾時、對方防爬蟲 403/429、SSL 憑證異常）。
+2. **免保管 PIN 自動登入回饋頁**：
+   - `mailer.py` 從 Sheet「局處PIN」讀取該局處專屬 PIN，直接拼入信件按鈕網址 `FEEDBACK_URL#pin=<PIN>`（URL fragment `#` 不會傳送至中間伺服器，前端 GAS 讀取後自動登入）。
+   - 信件開頭明確提示「處理完即可，不用回信、不用來電；只有確認系統判斷錯誤或承辦異動才需填回饋頁」。
+3. **收件人、密件副本與中繼寄送**：
+   - 收件人讀取母表 `局處Email`（支援逗號/分號多收件人 `parse_recipients`），密件副本讀取「局處聯絡人員表」的 `密件副本人員` 欄；另可設定 `config.mail_copy_to` 留存副本。
+   - 支援三種寄信通道：`outlook`（本機 COM）、`gmail`（SMTP）、`relay`（HTTPS POST 至 `deploy/mailrelay/relay.py`，支援多系統 Bearer token 驗證與忽略網路設備每 5 秒健康檢查造成的 TLS EOF 洗版）。
 
-深掃跑完後，`--mail` 觸發 `engine/mailer.py`：
-1. 讀 `all_problems.csv` + `suspicious_verified.csv`，按局處分組
-2. SUSPICIOUS 依 AI 複查判定過濾：**A/B 才列入信、C(誤報)不寄、?(待人工)列信末備註**
-3. 一個局處若複查後 0 條真問題 → 不寄（避免空信轟炸）
-4. 收件人：預設走各局處 `局處Email` 真值(per-局處，從 466 站 CSV 讀取)；`--mail-to` override 可指定(測試用)；查無 Email 時 fallback→config `mail_override_to`，再無則跳過(不得寄錯人)
-5. 一封信含該局處所有異常站、HTML 版型 + CSV 附件、主旨含局處名+異常數（A 判定加「【急】」）
+### 4.3 政府資安情資感知雙軌管線（`engine/sec_watch.py`）
 
-可獨立對既有報告補寄：`python -m engine.mailer <報告目錄> [--mail-to ...] [--dry-run]`
-
-### 4.3 合規檢核（`engine/compliance.py`，整合進深掃 worker）
-
-> `monthly_check.py` 已退役(git rm)。其檢查邏輯搬進 `engine/compliance.py`，由 `full_overnight` 的每站 worker 呼叫，不再獨立執行。
-
-**檢查項目**（同原 monthly_check）：HTTPS 憑證/HSTS、RWD、站內檢索、無障礙標章、首頁連結失效、站內深爬(`monthly/deep_check.py`)、AI 內容判讀。
-
-**分級執行**：基本合規（HTTPS/RWD/檢索/無障礙）466 站都做（成本近零）；AI 判讀 + deep_check 只做「合規檢核=是」的站。
-
-**產出**：報告目錄下的 `compliance.json`（各站合規結果），被 `update_excel.py` 讀取產 Excel 檢核表、被 `report_html.py` 讀取產合規檢核紅綠燈區塊。
-
-### 4.4 engine 健康(停更)剖面（`scan.py`）
-
-健康剖面(全站首頁層、靜態優先、快)——判斷每站最新消息時效、停更、抓取方式。
-偏「站況體檢」，與 §4.1 的「搶註獵捕」互補。合規檢核由 `compliance.py` 獨立處理（§4.3）。
-`run_all.py` 已移除——停更盤點直接用 `python -m engine.scan --profile health --sheet`。
-
-### 4.5 月度掃描排程（`schedule.py`）
-
-466 站分 30 天輪替，讓 `full_overnight` 每晚只掃一批而非全量。
-
-- **`--rebuild`**：讀府內網站表，巨站(≥5000頁)各佔獨立 Day、其餘貪婪裝箱均衡分配，寫回 Sheet「月度掃描排程」分頁。站名取自母表(永遠同步)、只納入現有站(下線站自動移除)。每月 1 號 cron 重算。
-- **`--today`**：`Day = ((日期-1) % 30) + 1`，讀排程分頁取站名清單，對回母表拿網址。
-- **`full_overnight --schedule-today`**：啟動時呼叫 `today_batch()`，掃描限縮為今天那批。與 `--org`/`--only` 互斥。
-- **Roadmap**：rebuild 邏輯未來可移植進 Apps Script ④（匯入即同步），本次不做。
+詳見 **[docs/SEC_INTEL_DESIGN.md](SEC_INTEL_DESIGN.md)**：
+- **Track 1（結構化黑名單）**：自動同步 `data.gov.tw` 165 反詐騙兩大資料集與 `scan_settings` 的 `gov_blacklist_extra`，排除共用平台整域封鎖、收斂大量涉詐子網域，寫入 `private/gov_blacklist.json`，於外連檢測時自動生效。
+- **Track 2（資安警訊與臨時清查任務）**：巡檢 TWCERT/CC RSS 或由管理員傳入 `--from-url` / `--from-text`，透過 AI JSON 判讀或啟發式規則抽取，經 `make_regex_safe`（防 ReDoS）與市政網頁樣板比對（防過寬誤報）後，生成 `private/sec_tasks/task_<id>.py` 並寄信通知管理員；管理員確認後執行 `--run-task <id> --mail` 即可在 1~2 分鐘內完成全府 466 站首頁清查。
 
 ---
 
 ## 5. 關鍵設計決策
 
-### (A) 誤報根因修正——把「亂喊狼來了」壓下去（本次 commit 重點）
-連結稽核最大的風險是誤報。`audit_links.check_external` 的判斷樹分層擋掉各類假警報：
+### (A) 外連稽核多層防誤報機制（`daily/audit_links.py`）
+1. **政府專屬網域只驗存活、不掃內容**：`GOV_EXCLUSIVE_SUFFIXES`（`.gov.tw` / `.mil.tw` / `.gov.taipei`）民間無法註冊，不可能被搶註；DNS 失敗也只標「服務下線或僅內網可解」。
+2. **165 黑名單先於 DNS 攔截 + 反詐宣導頁排除**：在 DNS 解析前比對 `gov_blacklist.json`（避免被 RPZ 停止解析的詐騙網域只被歸為一般 DEAD）；若出現頁面標題與錨點皆為反詐宣導詞（`is_antifraud_context`），則不保送判 A，改提醒人工確認是否為宣導範例。
+3. **攔截站內 3xx 轉址跳板（`EXT_REDIRECT`）與趨勢科技防毒包裝網址**：
+   - 站內連結若經 `/Links/go?url=...` 等 3xx 跳轉至外部網域，自動攔截歸入外部連結並保留原站內出現頁面。
+   - 誤貼趨勢科技信件追蹤網址（`trendmicro.com/wis/clicktime/...`）直接解析出原始 URL 並標示 `BROKEN` 提醒承辦改回原網址。
+4. **Cloudflare 403 / HEAD 迴圈退回 `curl` 複查 + 軟 404 識別 + SPA 404 瀏覽器複查**：
+   - Python `requests` TLS 指紋遭 Cloudflare 擋 403 或 HEAD 無限轉址時，自動退回系統 `curl` 複查（`_curl_alive`），並將轉址至 `/404.html` 的假 200 識別為 404（`_is_soft_404_url`）。
+   - 針對 `service.taipei`（Angular SSR 對所有案件頁伺服器端皆回 404），在多執行緒檢測後共用單一 Playwright 瀏覽器循序渲染複查（`_recheck_spa_404`），消除整批假 404 誤報。
+5. **關鍵字整字邊界（含拉丁擴充字元）+ 根路徑複查 + 第二關 AI 複查**：英文詞整字比對、先剔除善意詞；深層頁乾淨時額外抓根路徑檢查一次（`_root_keyword_hits`）；最後送 AI 讀全文判 A/B/C。
 
-1. **政府專屬網域只驗存活、不掃內容**：`GOV_EXCLUSIVE_SUFFIXES`(`.gov.tw`/`.mil.tw`/`.gov.taipei`)
-   依 TWNIC 規章民間根本註冊不到 → 不可能被搶註。DNS 失敗也只標「服務下線/內網限定」，
-   不再誤標「疑遭搶註」。**注意 `.edu.tw`/`.org.tw`/`.taipei` 民間可註冊，不列入、照樣全檢**。
-2. **社群/短網址只驗存活**：`SOCIAL_SKIP_HOSTS`(line/fb/youtube/bit.ly…)重導到他域是設計行為，不判搶註。
-3. **關鍵字整字比對 + 善意詞剔除**：英文詞用邊界比對(避免 `specialise` 撞 `cialis`，
-   邊界字元含拉丁擴充避免法文 é 破功)；中文子字串比對；先剔除 `白色情人節`、
-   `.casino`/`.poker`(註冊商當商品名賣的 TLD)等善意詞。
-4. **根路徑複查**：搶註者常只在首頁放賭場，深層頁 `/default.html` 回 200 且乾淨。
-   被連的深層頁沒中關鍵字時，`_root_keyword_hits` 會另抓根路徑掃一次(每 host 快取一次)
-   （真實案例：`taitraesource.com/default.html` 乾淨、`/` 是 Dewa77 賭場）。
-5. **第二關 AI 複查**：機械判 SUSPICIOUS 只是「候選」，一定再送地端 AI 讀全文判 A/B/C；
-   抓取失敗重試 3 次才降級，避免一次網路抖動把真掛馬誤降成停放。防治/反毒/藝評一律算 C。
+### (B) 被動式系統架構識別與資安標頭檢測（`compliance.check_tech_and_security`）
+- **零額外連線成本**：直接利用 `run_basic()` 已抓回的首頁狀態碼、Headers（含多條 `Set-Cookie` 與 `Strict-Transport-Security`）與 HTML 進行分析。
+- **排除 `.php` 外部連結假陽性**：許多 ASP.NET 機關網站因頁尾友站連結含有 `.php` 曾被誤判為 PHP 架構；程式嚴格區分「強 PHP 證據（Header / `PHPSESSID` / 自身 `.php` 路由 / WordPress 等 CMS 特徵）」與「僅內文含外部 `.php` 連結」，若本身具備 ASP.NET 特徵且無強 PHP 證據則排除 PHP 誤判並標註 `php_link_only_false_positive`。
+- **涵蓋 6 大類被動資安議題**：(a) PHP 版本外洩與 EOL（≤8.1）、(b) 老舊高風險 ColdFusion / Classic ASP、(c) CSP 殘留 `fc2.com` 或放行 `http://` 明文腳本來源、(d) Session Cookie 缺 `HttpOnly`/`Secure` 或網址暴露 Cookieless Session `(S(...))`、(e) 前端引用 CKEditor/CKFinder 或頁面直接輸出程式錯誤訊息 / `aspxerrorpath`、(f) 重複發送多條不同效期之 HSTS 標頭。
 
-### (B) 靜態優先、例外才渲染
-TCGweb 舊架構「每頁必渲」很吃資源。`fetch_layered` 改成靜態優先，`detect_shell` 判到
-JS 空殼/frameset/內容過少才升級 Playwright，實測 466 站僅約 10% 需渲染。
-`audit_links` 端再加 `_RENDER_CAP=60` 每站渲染預算，避免整站 SPA 每頁都渲染。
-**渲染由「內容抓取方式」欄驅動**：只有標 `playwright` 的站才會 `ALLOW_RENDER=True`。
-
-### (C) 加碼爬頁 + 頁數自適應
-- 大站不知道有幾頁：首掃撞上限就**加碼** 1000→3000→6000→9000 封頂，直到爬完。
-- 每站上次真實頁數記在府內網站表「頁數」欄；下次首掃上限 = 該值 + 100(`BUFFER`)。
-  掃完只在「這次爬更多」時把值寫大 → 記錄各站最大規模，且分頁跳過讓陷阱頁不灌大這個值。
-
-### (D) 站層級多行程平行 + 逐項 flush
-每站一個獨立子行程(`max_tasks_per_child=1`)：`ALLOW_RENDER`/渲染額度各自獨立不互相干擾，
-且每站跑完就釋放記憶體。所有產出邊完成邊 flush 寫檔，中途可查 progress、可 `--resume` 續跑。
-
-### (E) 0 頁站保護
-掃出 0 頁有兩種：暫時性抓空(重跑會恢復) vs SPA 空殼(需渲染)。`audit_one` 對 0 頁站
-開渲染重試 ≤2 次——靜態有料者重試仍走靜態即成功，SPA 空殼者這次被渲染救回。
-
-### (F) AI 供應商可換（`webcheck_ai`）
-同一套 `ask_ai` 依 `config.ai_provider` 切 openai 相容(地端 vLLM/Ollama 或雲端) / anthropic / gemini。
-地端跑(自架 AI 端點)可讓個資不出機關；雲端則裝 SDK 即用。
+### (C) 個資最小化保護（`webcheck_ai.mask_pii`）
+- 無論使用地端或雲端 AI，在將網頁文字或公告全文送入 LLM 前，一律先經 `mask_pii()` 自動遮蔽 Email 帳號名（保留 `@domain` 供判別公務或外部信箱）、臺灣身分證/居留證號與手機號碼。
 
 ---
 
-## 6. 技術債 / 重複 / 可清理處
+## 6. 技術債追蹤（更新至 2026-11）
 
-> 以下為走讀觀察，**非本次要動的項目**，供日後重構參考。按影響程度排序。
+### 已解決項目
+1. ~~**全站連結稽核有兩份（`engine/link_audit_all.py`）**~~：已移除，由 `full_overnight.py` 階段 1 涵蓋。
+2. ~~**SUSPICIOUS 第二關有兩份（`verify_suspicious.py`）**~~：已移除，由 `full_overnight --verify` 取代。
+3. ~~**賭博/色情關鍵字與 `PAGINATION_PARAMS` 分散多處**~~：已統一由 `scan_settings.py`（Sheet「掃描設定」分頁）單一來源管理。
+4. ~~**硬編 `D:\websitecheck` 絕對路徑不可攜**~~：已全面改用動態 `_ROOT` 與 `config.BASE_DIR` / `config.PRIVATE_DIR`。
 
-### 高：重複的「同一件事的不同版本」
-1. ~~**全站連結稽核有兩份**：`engine/link_audit_all.py`~~ **已移除**（2026-07，功能完全被 `full_overnight.py` 階段1 涵蓋）。
-2. ~~**SUSPICIOUS 第二關有兩份**~~：**已解決**（2026-07，`verify_suspicious.py` 已移除，功能由 `full_overnight --verify` 取代）。
-3. ~~**賭博/色情關鍵字清單有兩份**~~：**已解決**（2026-07，統一為 `scan_settings.py` 單一來源，Sheet「掃描設定」可調）。
-
-### 中：三個 BFS 爬蟲、多條 HTML→text 路徑
-- 專案裡有**三個爬蟲**各為其目的：`audit_links.crawl_internal`(外連導向, requests+BS4)、
-  `engine/crawl.crawl_site`(健康/日期導向, urllib+fetch_layered)、`monthly/deep_check`(站內失效導向)。
-  三者都做 BFS + 抽連結 + 分頁跳過，但去重與外連處理各異。短期難合併(目的不同)。
-  ~~`PAGINATION_PARAMS` 在 `audit_links` 與 `engine/crawl` 各定義一份且集合不同，易漂移，可先統一。~~
-  **已解決**（2026-07，統一為 `scan_settings.get("pagination_params")`，16 參數完整版含月曆類）。
-- HTML 轉文字散在 `webcheck_ai.html_to_text`、`audit_links` 的 BS4 `get_text`、
-  `full_overnight.visible_text` 三處。
-
-### 中：硬編絕對路徑，不可攜
-- `engine/*` 幾乎每支開頭 `sys.path.insert(0, r"D:\websitecheck")`，且 `CSV_LIST` /
-  `CSV_DEFAULT` 把 `D:\websitecheck\private\TCGweb_466站對照清單_v2.csv` 寫死在 3 個檔。
-  → 專案已有 `config.BASE_DIR`/`config.PRIVATE_DIR`，engine 卻沒用；換機器或改路徑會全斷。
-  建議統一改讀 config。（`verify_suspicious` 的 glob 路徑同樣寫死。）
-
-### 低：報告目錄無保留策略
-- `private/reports/` 已累積多個 `full_overnight_*` 目錄，多是 1~2 站的定點重測。
-  reports 沒有自動清理。建議加保留天數/自動歸檔。
-
-### 低：跨行程 print 編碼
-- 子行程內 `audit_links` 的 crawl 進度 `print` 在被重導到 log 時會呈現 Big5 亂碼
-  （`full_overnight` 自己的 `[階段x]` 行有 `reconfigure(utf-8)` 是乾淨的）。不影響結果，追 log 時知道即可。
+### 現存已知限制（低影響，維持現狀即可）
+- **三個 BFS 爬蟲各司其職**：`audit_links.crawl_internal`（外連導向）、`engine/crawl.crawl_site`（健康日期導向）、`monthly/deep_check`（站內失效與附件導向）因目標與資料結構不同，維持獨立。
+- **報告目錄無自動清理策略**：`private/reports/` 下的歷史 `full_overnight_*` 目錄目前保留供趨勢比對，未設自動刪除。
 
 ---
 
 ## 7. 常用指令速查
 
 ```bash
+# ── 1. 全站深度稽核與寄信 (full_overnight / mailer) ──
 # 排程深掃(每晚只掃今天那批) + 按局處寄信
 python -m engine.full_overnight --schedule-today --mail --workers 6
 # 全站四階段深度稽核(整夜全量) + 按局處寄信
 python -m engine.full_overnight --max-pages 8000 --workers 6 --mail
-# 只掃某局處 / 定點重測 / 續跑
+# 只掃某局處 / 定點重測 / 淺掃驗證 / 續跑
 python -m engine.full_overnight --org 教育局 --workers 6
 python -m engine.full_overnight --only taitraesource --workers 3
+python -m engine.full_overnight --force-cap 20 --limit 5 --workers 3
 python -m engine.full_overnight --org 教育局 --resume full_overnight_20260707_1659 --workers 6
-# 複查模式:不重爬,對既有報告重跑階段2-4(取代舊 verify_suspicious)
+# 複查模式：不重爬，對既有報告重跑階段 2~4 AI 複查
 python -m engine.full_overnight --verify <報告目錄>
-
-# 對既有報告補寄 / dry-run 確認
+# 對既有報告補寄 / dry-run 預覽
 python -m engine.mailer <報告目錄> --dry-run
-python -m engine.mailer <報告目錄> --mail-to <收件人>
+python -m engine.mailer <報告目錄> --mail-to <測試收件人>
 
-# HTML 報告產生(單站+全市,吃AI複查降級)
-python -m engine.report_html                      # 全部:所有站+全市總報告
-python -m engine.report_html --org 教育局          # 只產某局處
-python -m engine.report_html --city --zip          # 只產全市總報告+壓zip
+# ── 2. 政府資安情資感知與臨時清查任務 (sec_watch) ──
+# 同步 165 黑名單 + 巡檢 TWCERT 新公告(加 --mail 有新任務即寄給管理員)
+python -m engine.sec_watch --mail
+python -m engine.sec_watch --dry-run
+# 只同步 165 反詐黑名單
+python -m engine.sec_watch --sync-blacklist
+# 手動輸入交辦公文或網址產出臨時清查腳本草稿
+python -m engine.sec_watch --from-url "https://www.twcert.org.tw/..." --mail
+python -m engine.sec_watch --from-text "請各機關清查網站是否引用..." --title "專案清查" --mail
+# 執行指定臨時清查任務(掃全府 466 站首頁並寄回 CSV 報表)
+python -m engine.sec_watch --run-task <任務ID> --mail
+python -m engine.sec_watch --list-tasks
 
-# 月度掃描排程
-python -m engine.schedule --rebuild              # 重算排程寫回 Sheet
-python -m engine.schedule --today                # 印今天該掃哪些站
-
-# engine 健康(停更)剖面體檢
-python -m engine.scan --profile health --sheet
-
-# 每月檢核 / 同步設定
-python monthly/sync_config.py
+# ── 3. HTML 報告、排程、白名單健檢與 PIN 輪替 ──
+python -m engine.report_html                      # 產所有單站報告 + 全市總報告
+python -m engine.report_html --city --zip         # 只產全市總報告並壓 zip
+python -m engine.schedule --rebuild               # 重算 30 天排程寫回 Sheet
+python -m engine.schedule --today                 # 印出今天排程站點
+python -m engine.whitelist_recheck --mail         # 月度 Playwright 白名單(skip_hosts)健檢
+python -m engine.pin_mailer --rotate --no-mail    # 每季輪替各局處回饋頁 PIN 碼
+python -m engine.scan --profile health --sheet    # 網站更新時效/停更體檢
 ```
-
-追蹤整夜稽核進度：看報告目錄的 `progress.json`(每站 flush)，跑完會出現
-`summary.json` 與 `CONFIRMED_hijacks.csv`。

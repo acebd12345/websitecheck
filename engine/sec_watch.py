@@ -1041,6 +1041,7 @@ def _ask_ai_json(advisory_text: str) -> dict | None:
         return None
     if len(advisory_text) > 15000:
         advisory_text = advisory_text[:15000] + "\n...(截斷)"
+    advisory_text = webcheck_ai.mask_pii(advisory_text)
     user_msg = f"{AI_TRIAGE_USER_PROMPT}\n\n=== 資安公告全文 ===\n{advisory_text}"
 
     provider = webcheck_ai.PROVIDER

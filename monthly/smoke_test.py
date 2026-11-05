@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """部署冒煙測試：確認新電腦上環境/設定/模組基本健全，不寫任何檔、不改線上資料。
 
-用法: python smoke_test.py
-全部 PASS 才代表這台可以跑 每月檢核.bat。
+用法: python monthly/smoke_test.py
+全部 PASS 才代表這台可以跑 每日稽核.bat (engine.full_overnight)。
 """
 import importlib
 import os
