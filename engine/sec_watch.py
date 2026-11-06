@@ -8,12 +8,20 @@
     採用精簡型態儲存（磁碟 ~2.3MB、記憶體 ~12MB）並以 `threading.Lock()` 保證多執行緒只載入一次，
     保護 4GB 無 swap 之掃描主機不爆記憶體。
 
-  - Track 2（資安警訊巡檢 & 臨時清查任務 — 先寄信給管理員）：
-    巡檢 TWCERT/CC（TVN 漏洞公告 RSS、資安新聞 RSS）或手動餵入公文/網址（--from-url / --from-text），
-    透過專屬 JSON System Prompt 呼叫 AI 判讀是否與「政府網站外部檢測」相關：
-      * 巡檢、3 站試跑與標準任務清查全程使用純宣告式規則引擎 (`evaluate_rules`)，含 ReDoS 與過寬規則攔截。
-      * 自動產出無注入風險之獨立任務檔 `private/sec_tasks/task_<id>.py` 並寄信通知管理員。
-    管理員確認後可執行 `--run-task <id> [--mail]`（產出本地 CSV 報表並寄回管理員，含檢查效期與嚴格 AST 白名單）。
+  - Track 2（資安警訊巡檢、雙層零成本守門員 & 雙軌分流處置 — 先寄信給管理員）：
+    巡檢 CISA KEV（已知遭積極利用漏洞清單 JSON）、TWCERT/CC（TVN 漏洞公告 RSS、資安新聞 RSS）
+    或手動餵入公文/網址（--from-url / --from-text）：
+      1. 零成本守門員 A（底層語言/伺服器/共用平台白名單）：僅比對公告「標題 / 產品欄位」（絕不比對內文，
+         避免商用產品內文提及「以 ASP.NET 開發」而誤觸），直接過濾個別民間公司私用系統（0 AI 呼叫、0 產檔）。
+      2. 零成本守門員 B（重大風險門檻）：必須列入 CISA KEV、CVSS >= 8.5，或具備 RCE / SQLi / 認證繞過 /
+         反序列化 / 任意檔案上傳 / 在野攻擊 / 供應鏈污染等重大外部風險指標。
+      3. 通過雙門檻後依性質分流：
+         - 路徑 1 (`ARCH_INVENTORY` 母表架構直查)：凡屬網站底層語言/Web Server/CMS/本府共用平台（PHP、ASP.NET、
+           IIS、Java/HyWeb/Spring、Apache、Nginx、Node.js/Next/Nuxt、WordPress、CCMS、NSS 等），**不產出 `task_*.py`、
+           不呼叫 AI**，直接比對母表「系統語言與架構」欄與最新合規報告，匯出候選受影響網站清單 CSV 附於通知信。
+         - 路徑 2 (`TEMP_TASK` 臨時清查腳本草稿)：僅針對外部腳本/供應鏈污染（如 `polyfill.io`）或手動交辦指令，
+           才呼叫專屬 JSON System Prompt 產出無注入風險之 `private/sec_tasks/task_<id>.py`。
+    管理員確認後可執行 `--run-task <id> [--mail]`，或執行 `--fill-arch` 快速回填全府 466 站「系統語言與架構」欄。
 """
 from __future__ import annotations
 
@@ -89,7 +97,9 @@ SOURCE_CODE_LABELS = {
     "e": "掃描設定手動補充",
 }
 
-# ── 政府資安警訊與漏洞通報 RSS 預設清單 ──
+# ── 政府資安警訊與漏洞通報預設清單（CISA KEV 結構化 JSON + TWCERT/CC RSS）──
+CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
 DEFAULT_ADVISORY_FEEDS = [
     {
         "name": "TWCERT/CC TVN 漏洞公告",
@@ -98,6 +108,142 @@ DEFAULT_ADVISORY_FEEDS = [
     {
         "name": "TWCERT/CC 資安新聞與警訊",
         "url": "https://www.twcert.org.tw/tw/rss-104-1.xml",
+    },
+]
+
+# 母表「系統語言與架構」中若某共用平台出現達此站數以上，即自動納入 Track 2 共用平台白名單
+SHARED_PLATFORM_MIN_SITES = 5
+
+# ── Track 2 零成本守門員 A：網站底層語言 / Web Server / 通用 CMS / 本府共用平台白名單 ──
+# 重要原則：只比對公告「標題 / CISA KEV 產品欄位」，絕不比對內文（防止商用產品內文寫「以 ASP.NET 開發」而誤觸）
+# route="ARCH_INVENTORY" → 直接查母表「系統語言與架構」欄匯出候選站清單 CSV（不產出 task_*.py、不呼叫 AI）
+# route="TEMP_TASK"      → 外部腳本/供應鏈/憑證事件，需掃描首頁 HTML/script_src 或產出臨時任務草稿
+FOUNDATION_TECH_RULES = [
+    {
+        "key": "PHP",
+        "label": "PHP 語言與執行環境",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:php|laravel|symfony|codeigniter|yii)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("php", "laravel", "symfony", "codeigniter", "yii", "wordpress", "drupal", "joomla", "xoops", "moodle"),
+    },
+    {
+        "key": "ASP.NET",
+        "label": "ASP.NET / .NET 框架",
+        "title_re": re.compile(r"(?:asp\.net|(?<![A-Za-z0-9_])\.net\s*(?:core|framework|[0-9])|kestrel)", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("asp.net", "ccms", "kestrel"),
+    },
+    {
+        "key": "IIS",
+        "label": "Microsoft IIS 網頁伺服器",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:iis|internet\s+information\s+services)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("iis", "asp.net"),
+    },
+    {
+        "key": "Java_Web",
+        "label": "Java Web / Spring / Struts / Tomcat",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:spring\s*(?:framework|boot|cloud|security)?|struts2?|tomcat|jboss|wildfly|weblogic|websphere|jetty|openjdk|oracle\s+java)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("java", "jsp", "servlet", "spring", "struts", "tomcat", "hyweb", "wsite", "jboss", "jetty"),
+    },
+    {
+        "key": "Apache_HTTP",
+        "label": "Apache HTTP Server",
+        "title_re": re.compile(r"(?:apache\s+http|httpd|mod_ssl|mod_proxy|mod_rewrite)", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("apache",),
+    },
+    {
+        "key": "Nginx",
+        "label": "Nginx / OpenResty 網頁伺服器",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:nginx|openresty)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("nginx", "openresty"),
+    },
+    {
+        "key": "NodeJS",
+        "label": "Node.js / Next.js / Nuxt.js / Express",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:node\.?js|next\.?js|nuxt\.?js|express\.?js)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("node.js", "next.js", "nuxt", "express"),
+    },
+    {
+        "key": "ColdFusion",
+        "label": "Adobe ColdFusion",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])coldfusion(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("coldfusion",),
+    },
+    {
+        "key": "WordPress",
+        "label": "WordPress CMS",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])wordpress(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("wordpress",),
+    },
+    {
+        "key": "Drupal",
+        "label": "Drupal CMS",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])drupal(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("drupal",),
+    },
+    {
+        "key": "Joomla",
+        "label": "Joomla! CMS",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])joomla(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("joomla",),
+    },
+    {
+        "key": "Moodle",
+        "label": "Moodle 數位學習平台",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])moodle(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("moodle",),
+    },
+    {
+        "key": "XOOPS",
+        "label": "XOOPS CMS",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])xoops(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("xoops",),
+    },
+    {
+        "key": "CKEditor",
+        "label": "CKEditor / CKFinder 網頁編輯器元件",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:ckeditor|ckfinder|fckeditor|tinymce)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("ckeditor", "ckfinder"),
+    },
+    {
+        "key": "Frontend_Framework",
+        "label": "通用前端框架 (jQuery / Vue / React / Angular)",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])(?:jquery(?:\s+ui)?|vue\.?js|reactjs|react\s+server|angular(?:js)?|bootstrap)(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("jquery", "vue", "react", "angular", "bootstrap"),
+    },
+    {
+        "key": "TCG_Shared_Platform",
+        "label": "本府多機關共用網站平台 (CCMS / HyWeb / 校園 NSS)",
+        "title_re": re.compile(r"(?:ccms|hyweb|凌網|wsite|(?<![A-Za-z0-9_.-])nss(?![A-Za-z0-9_.-])|全誼)", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("ccms", "hyweb", "wsite", "nss"),
+    },
+    {
+        "key": "OpenSSL_TLS",
+        "label": "OpenSSL / TLS 底層加密元件",
+        "title_re": re.compile(r"(?<![A-Za-z0-9_.-])openssl(?![A-Za-z0-9_.-])", re.I),
+        "route": "ARCH_INVENTORY",
+        "arch_keywords": ("apache", "nginx", "openssl", "php"),
+    },
+    {
+        "key": "SupplyChain_Web",
+        "label": "第三方腳本供應鏈污染 / 憑證信任事件",
+        "title_re": re.compile(r"(?:polyfill|cdn\.|供應鏈攻擊|植入惡意程式|網頁掛馬|憑證撤銷|停止信任|twca|中華電信憑證)", re.I),
+        "route": "TEMP_TASK",
+        "arch_keywords": (),
     },
 ]
 
@@ -689,6 +835,288 @@ def fetch_advisory_fulltext(url: str, fallback_text: str = "", allow_insecure_fa
         return fallback_text
 
 
+def fetch_cisa_kev_items(lookback_days: int = 30, limit: int = 25) -> list[dict]:
+    """抓取美國 CISA KEV (Known Exploited Vulnerabilities) 結構化 JSON 清單。
+    以清單內最新 dateAdded 為基準往回推 lookback_days 天（不受本機時鐘偏移影響），
+    零 AI 成本即可取得已遭駭客在野積極利用之 CVE 與 vendorProject/product。
+    """
+    raw = _http_fetch_text(CISA_KEV_URL, timeout=25, verify_tls=True)
+    data = json.loads(raw)
+    vulns = data.get("vulnerabilities") or []
+    if not vulns:
+        return []
+
+    vulns_sorted = sorted(vulns, key=lambda v: str(v.get("dateAdded") or ""), reverse=True)
+    latest_str = str(vulns_sorted[0].get("dateAdded") or "")
+    try:
+        ref_date = datetime.date.fromisoformat(latest_str[:10])
+    except Exception:
+        ref_date = datetime.date.today()
+    cutoff_str = (ref_date - datetime.timedelta(days=lookback_days)).isoformat()
+
+    items: list[dict] = []
+    for v in vulns_sorted:
+        d_added = str(v.get("dateAdded") or "")
+        if d_added and d_added < cutoff_str:
+            break
+        cve_id = str(v.get("cveID") or "").strip()
+        vendor = str(v.get("vendorProject") or "").strip()
+        product = str(v.get("product") or "").strip()
+        vname = str(v.get("vulnerabilityName") or "").strip()
+        sdesc = str(v.get("shortDescription") or "").strip()
+        action = str(v.get("requiredAction") or "").strip()
+        ransom = str(v.get("knownRansomwareCampaignUse") or "").strip()
+        if not cve_id:
+            continue
+        title = f"{vendor}｜{product} - {vname} ({cve_id})"
+        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+        summary = f"{sdesc}\n處置建議：{action}\n勒索軟體利用狀態：{ransom}"
+        items.append({
+            "id": hashlib.sha256(f"KEV:{cve_id}".encode("utf-8")).hexdigest()[:12],
+            "source": "CISA KEV 已遭利用漏洞清單",
+            "title": title,
+            "url": nvd_url,
+            "pub_date": d_added,
+            "vendor_product": f"{vendor} {product}".strip(),
+            "is_kev": True,
+            "summary_raw": summary,
+            "full_text": summary,
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+# ── Track 2 雙層零成本守門員（Gatekeeper A + Gatekeeper B）與母表架構直查 ──
+
+_SEVERITY_HIGH_RE = re.compile(
+    r"(?:"
+    r"remote\s+code\s+execution|(?<![A-Za-z0-9_])rce(?![A-Za-z0-9_])|遠端程式碼執行|遠端執行任意程式碼|任意程式碼執行|"
+    r"command\s+injection|命令注入|指令注入|"
+    r"sql\s+injection|(?<![A-Za-z0-9_])sqli(?![A-Za-z0-9_])|sql\s*隱碼|資料隱碼|"
+    r"authentication\s+bypass|auth\s+bypass|身分驗證繞過|認證繞過|未授權存取|權限繞過|"
+    r"deserialization|反序列化|"
+    r"arbitrary\s+file\s+(?:upload|read|write|deletion)|任意檔案(?:上傳|讀取|寫入|刪除)|"
+    r"path\s+traversal|directory\s+traversal|目錄遍歷|路徑穿越|"
+    r"actively\s+exploited|exploited\s+in\s+the\s+wild|已遭(?:駭客)?利用|在野(?:攻擊|利用)|廣泛利用|"
+    r"供應鏈攻擊|植入惡意|網頁掛馬|憑證撤銷|停止信任"
+    r")",
+    re.I,
+)
+_CVSS_SCORE_RE = re.compile(r"cvss[^0-9]{0,25}(10\.0|[0-9]\.[0-9])", re.I)
+
+
+def _load_latest_compliance_tech() -> dict[str, dict]:
+    """從本機最新一份 reports/*/compliance.json 載入各站 tech 掃描結果（補強 CSV 尚未回填之站點）。"""
+    rep_root = config.REPORTS_DIR
+    if not os.path.isdir(rep_root):
+        return {}
+    candidates = []
+    for fn in os.listdir(rep_root):
+        p = os.path.join(rep_root, fn, "compliance.json")
+        if os.path.isfile(p):
+            try:
+                candidates.append((os.stat(p).st_mtime, p))
+            except OSError:
+                pass
+    if not candidates:
+        return {}
+    candidates.sort(reverse=True)
+    for _, path in candidates[:3]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            sites = data.get("sites") if isinstance(data, dict) else None
+            if isinstance(sites, dict) and sites:
+                return {
+                    u.strip(): (info.get("tech") or {})
+                    for u, info in sites.items()
+                    if isinstance(info, dict) and info.get("tech")
+                }
+        except Exception:
+            continue
+    return {}
+
+
+def _get_shared_platforms_from_csv(min_sites: int = SHARED_PLATFORM_MIN_SITES) -> dict[str, int]:
+    """統計母表「系統語言與架構」欄與最新合規報告中，出現達 min_sites 站以上之技術/平台代號。"""
+    counts: dict[str, int] = {}
+    comp_tech = _load_latest_compliance_tech()
+    sites = _load_sites_from_csv()
+    for row in sites:
+        u = (row.get("網址") or "").strip()
+        arch = (row.get("系統語言與架構") or "").strip()
+        if not arch and u in comp_tech:
+            arch = str(comp_tech[u].get("stack_summary") or "").strip()
+        if not arch:
+            continue
+        for part in re.split(r"[+/,;|()]+", arch):
+            tok = part.strip()
+            if len(tok) >= 3:
+                counts[tok] = counts.get(tok, 0) + 1
+    return {k: v for k, v in counts.items() if v >= min_sites}
+
+
+def match_foundation_whitelist(title: str, vendor_product: str = "") -> dict | None:
+    """守門員 A：僅針對公告「標題 / 產品欄位」比對底層語言、伺服器、CMS 與本府共用平台白名單。
+    - 命中時回傳 {"key", "label", "route", "arch_keywords", "matched_token"}。
+    - 個別民間公司商用 OA/HR/差勤系統（如 亞璿｜BA-Workflow、新人類｜OneAPP、凱發｜WebITR）
+      在標題階段即直接回傳 None，0 AI 成本、0 產檔。
+    """
+    head_text = f"{title} {vendor_product}".strip()
+    if not head_text:
+        return None
+    for rule in FOUNDATION_TECH_RULES:
+        m = rule["title_re"].search(head_text)
+        if m:
+            return {
+                "key": rule["key"],
+                "label": rule["label"],
+                "route": rule["route"],
+                "arch_keywords": rule["arch_keywords"],
+                "matched_token": m.group(0),
+            }
+    # 動態檢查母表「系統語言與架構」中 >= SHARED_PLATFORM_MIN_SITES 站共用之平台名稱
+    for plat_name, cnt in _get_shared_platforms_from_csv().items():
+        pat = r"(?<![A-Za-z0-9_.-])" + re.escape(plat_name) + r"(?![A-Za-z0-9_.-])"
+        if re.search(pat, head_text, re.I):
+            return {
+                "key": _sanitize_short_title(plat_name, default="SharedPlatform"),
+                "label": f"本府多站共用平台 ({plat_name}，共 {cnt} 站)",
+                "route": "ARCH_INVENTORY",
+                "arch_keywords": (plat_name.lower(),),
+                "matched_token": plat_name,
+            }
+    return None
+
+
+def passes_severity_gate(title: str, full_text: str, is_kev: bool = False) -> tuple[bool, str]:
+    """守門員 B：重大風險門檻。
+    必須滿足以下任一條件才放行通知管理員：
+      1. 列入 CISA KEV 已知遭積極利用清單 (`is_kev=True`)
+      2. 公告標示 CVSS 評分 >= 8.5
+      3. 具備高風險遠端攻擊指標（RCE / SQLi / 認證繞過 / 反序列化 / 任意檔案上傳 / 目錄遍歷 / 在野利用 / 供應鏈污染）
+    """
+    if is_kev:
+        return True, "列入 CISA KEV 已知遭駭客在野積極利用清單"
+
+    combined = f"{title}\n{full_text or ''}"
+    scores = [float(s) for s in _CVSS_SCORE_RE.findall(combined)]
+    if scores and max(scores) >= 8.5:
+        return True, f"CVSS 高風險評分 ({max(scores):.1f} >= 8.5)"
+
+    m = _SEVERITY_HIGH_RE.search(combined)
+    if m:
+        return True, f"命中重大外部風險指標（{m.group(0)}）"
+
+    return False, "未達重大風險門檻（非 CISA KEV、CVSS < 8.5 且無 RCE/SQLi/認證繞過/在野利用特徵）"
+
+
+def build_arch_inventory_report(item: dict, tech_match: dict, sev_reason: str) -> dict:
+    """路徑 1 (`ARCH_INVENTORY`)：針對底層語言/伺服器/CMS/共用平台漏洞，**不產出 task_*.py、不呼叫 AI**，
+    直接查詢母表 `系統語言與架構` 欄與最新合規報告，匯出本府候選受影響網站清單 CSV 供管理員與承辦核對版號。
+    """
+    sites = _load_sites_from_csv()
+    comp_tech = _load_latest_compliance_tech()
+    arch_kws = tuple(k.lower() for k in (tech_match.get("arch_keywords") or ()))
+
+    matched_rows: list[dict] = []
+    populated_total = 0
+
+    for r in sites:
+        u = (r.get("網址") or "").strip()
+        nm = (r.get("網站名稱") or "").strip()
+        org = (r.get("局處") or "").strip()
+        email = (r.get("局處Email") or "").strip()
+        csv_arch = (r.get("系統語言與架構") or "").strip()
+        t_info = comp_tech.get(u) or {}
+        stack_sum = csv_arch or str(t_info.get("stack_summary") or "").strip()
+        if stack_sum and stack_sum != "靜態/未識別 (已隱藏伺服器特徵)":
+            populated_total += 1
+
+        clues_list = t_info.get("clues") or []
+        sec_notes = [n.get("msg", "") for n in (t_info.get("security_notes") or []) if isinstance(n, dict)]
+        search_blob = " | ".join([
+            stack_sum,
+            str(t_info.get("server_software") or ""),
+            " ".join(t_info.get("frameworks") or []),
+            " ".join(t_info.get("cms_platform") or []),
+            " ".join(t_info.get("frontend") or []),
+            " ".join(clues_list),
+            " ".join(sec_notes),
+        ]).lower()
+
+        if arch_kws and any(kw in search_blob for kw in arch_kws):
+            matched_rows.append({
+                "局處": org,
+                "網站名稱": nm,
+                "網址": u,
+                "系統語言與架構": stack_sum or "(由合規特徵命中)",
+                "技術線索與安全提示": "；".join((clues_list[:3] + sec_notes[:2])) or "-",
+                "局處Email": email,
+            })
+
+    matched_rows.sort(key=lambda x: (x["局處"], x["網站名稱"]))
+
+    today = datetime.date.today()
+    expires = today + datetime.timedelta(days=14)
+    item_key = item["id"][:6]
+    tech_key = _sanitize_short_title(tech_match["key"], default="arch")
+    inv_id = f"{today.strftime('%Y%m%d')}_{item_key}_{tech_key}"
+
+    os.makedirs(config.REPORTS_DIR, exist_ok=True)
+    csv_out = os.path.join(config.REPORTS_DIR, f"sec_arch_{today.strftime('%Y%m%d')}_{tech_key}.csv")
+    cols = ["局處", "網站名稱", "網址", "系統語言與架構", "技術線索與安全提示", "局處Email"]
+    with open(csv_out, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerows(matched_rows)
+
+    org_counts: dict[str, int] = {}
+    for mr in matched_rows:
+        o = mr["局處"] or "未分類"
+        org_counts[o] = org_counts.get(o, 0) + 1
+    top_orgs = "、".join(
+        f"{o}({c}站)" for o, c in sorted(org_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+    ) or "目前母表已識別架構中尚無命中站點"
+
+    coverage_note = (
+        f"母表共 {len(sites)} 站，目前已識別系統架構 {populated_total} 站"
+        + ("（建議先執行 `python -m engine.sec_watch --fill-arch` 一次補齊全府 466 站架構欄位）"
+           if populated_total < len(sites) // 2 else "")
+    )
+    meta = {
+        "id": inv_id,
+        "title": str(item.get("title", "")),
+        "title_short": tech_key,
+        "source": str(item.get("source", "資安情資")),
+        "source_url": str(item.get("url", "")),
+        "category": "ARCH_INVENTORY",
+        "tech_label": tech_match["label"],
+        "reason": f"命中底層架構白名單【{tech_match['label']}】且{sev_reason}",
+        "action_summary": (
+            f"直接比對母表「系統語言與架構」欄，共篩出 {len(matched_rows)} 個使用相關架構之候選網站（{coverage_note}）。"
+            "因資安良好的網站多已隱藏精確小版號，請依附件 CSV 請相關局處/維護廠商確認實際版本是否落入受影響範圍。"
+        ),
+        "matched_count": len(matched_rows),
+        "populated_total": populated_total,
+        "total_sites": len(sites),
+        "top_orgs": top_orgs,
+        "sample_sites": [
+            {"site": r["網站名稱"], "org": r["局處"], "url": r["網址"], "arch": r["系統語言與架構"]}
+            for r in matched_rows[:8]
+        ],
+        "created_at": today.strftime("%Y-%m-%d"),
+        "expires_at": expires.strftime("%Y-%m-%d"),
+    }
+    return {
+        "advisory_id": item["id"],
+        "meta": meta,
+        "path": csv_out,
+        "validation": {"preview": [], "rules": [], "rejected": []},
+    }
+
+
 # ── 純宣告式規則驗證與執行引擎（含 ReDoS 回溯爆炸攔截 + 真實市政網頁樣板防誤報）──
 
 VALID_RULE_TARGETS = {"html", "headers", "script_src", "link_href"}
@@ -1183,19 +1611,6 @@ def _heuristic_fallback_analysis(title: str, content: str, url: str) -> dict:
                 "detail": f"網頁原始碼出現通報提及之腳本/端點: {jf}",
             })
 
-    # 2. 從 TVN 標題「廠商｜產品名 - 漏洞說明」抽取專屬英文/連字號系統識別碼（如 BA-Workflow、OneAPP、WebITR）
-    if "｜" in title:
-        prod_part = re.split(r"\s+-\s+", title.split("｜", 1)[1], maxsplit=1)[0].strip()
-        for tok in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", prod_part):
-            if tok.lower() not in _ENG_STOPWORDS and tok not in indicators:
-                indicators.append(tok)
-                rules.append({
-                    "target": "html",
-                    "pattern": r"(?<![A-Za-z0-9_-])" + re.escape(tok) + r"(?![A-Za-z0-9_-])",
-                    "severity": "WARN",
-                    "detail": f"網頁原始碼或標頭出現通報產品特徵詞: {tok}",
-                })
-
     clean_rules = sanitize_and_validate_rules(rules)
     if not clean_rules:
         return {
@@ -1204,7 +1619,7 @@ def _heuristic_fallback_analysis(title: str, content: str, url: str) -> dict:
             "action_summary": "", "suggested_domains": [], "suggested_keywords": [], "rules": [],
         }
 
-    cves = re.findall(r"CVE-\d{4}-\d{4,7}", full, re.I)
+    cves = list(dict.fromkeys(c.upper() for c in re.findall(r"CVE-\d{4}-\d{4,7}", full, re.I)))
     cve_str = f" ({', '.join(cves[:2])})" if cves else ""
     short_name = _sanitize_short_title(indicators[0], default="資安專案清查")
 
@@ -1568,32 +1983,61 @@ def _get_admin_recipient(override_to: str | None = None) -> str:
 
 
 def build_advisory_mail_html(tasks_created: list[dict]) -> str:
-    """產出寄給管理員的【資安情資感知與臨時清查建議】HTML 信件。"""
+    """產出寄給管理員的【資安情資感知與雙軌分流處置】HTML 信件（支援 ARCH_INVENTORY 母表直查與 TEMP_TASK 臨時腳本）。"""
     rows_html = []
     for t in tasks_created:
         meta = t["meta"]
-        prev = t["validation"]["preview"]
-        prev_str = (
-            "；".join(f"{p['site']}({p['status']}, {p['ms']}ms)" for p in prev)
-            if prev else "（純詞庫/網域建議，無需首頁試跑）"
-        )
-        cat_badge = (
-            '<span style="background:#d9534f;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">臨時清查任務</span>'
-            if meta["category"] == "TEMP_TASK"
-            else '<span style="background:#0275d8;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">長期規則建議</span>'
-        )
-        cmd_run = f"python -m engine.sec_watch --run-task {meta['id']} --mail"
-        has_rules = bool(t["validation"].get("rules"))
-        if has_rules:
-            cmd_block = (
-                "# 若您確認要對全府 466 站執行此專案清查並匯出 CSV 報表寄回信箱：<br/>"
-                f"{html_mod.escape(cmd_run)}"
+        cat = meta.get("category", "TEMP_TASK")
+        if cat == "ARCH_INVENTORY":
+            cat_badge = '<span style="background:#6f42c1;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">母表架構直查（免跑腳本）</span>'
+            samples = meta.get("sample_sites") or []
+            sample_str = (
+                "；".join(f"{s['org']}-{s['site']} ({s['arch']})" for s in samples[:6])
+                if samples else "（目前母表已識別架構中尚無命中站點，請參考涵蓋率說明）"
             )
+            preview_box = f"""
+          <div style="background:#f3f0ff;border-left:4px solid #6f42c1;padding:8px 12px;margin:10px 0;font-size:13px;">
+            <strong>母表「系統語言與架構」直查結果：</strong>共命中 <b>{meta.get('matched_count', 0)}</b> 站
+            （母表已識別架構 {meta.get('populated_total', 0)} / {meta.get('total_sites', 466)} 站）<br/>
+            <strong>主要分布局處：</strong>{html_mod.escape(str(meta.get('top_orgs', '-')))}<br/>
+            <strong>代表性候選站點：</strong>{html_mod.escape(sample_str)}
+          </div>
+          <div style="background:#2b2b2b;color:#f8f8f2;padding:10px 14px;border-radius:5px;font-family:Consolas,monospace;font-size:13px;">
+            # 已直接匯出候選受影響網站清單於信件附件 CSV：{html_mod.escape(os.path.basename(t.get('path', '')))}<br/>
+            # 提醒：資安設定良好之伺服器已隱藏精確小版號，請轉知附件所列網站之承辦/廠商核對版本是否落入漏洞範圍。<br/>
+            # 如需一次補齊全府 466 站「系統語言與架構」欄位：python -m engine.sec_watch --fill-arch
+          </div>"""
         else:
-            cmd_block = (
-                "# 本通報無可自動比對之網頁規則（僅有長期網域/關鍵字建議），無法執行全府清查。<br/>"
-                "# 請人工評估後，將建議網域加入 scan_settings gov_blacklist_extra 或常態關鍵字。"
+            prev = t["validation"]["preview"]
+            prev_str = (
+                "；".join(f"{p['site']}({p['status']}, {p['ms']}ms)" for p in prev)
+                if prev else "（純詞庫/網域建議，無需首頁試跑）"
             )
+            cat_badge = (
+                '<span style="background:#d9534f;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">臨時清查任務</span>'
+                if cat == "TEMP_TASK"
+                else '<span style="background:#0275d8;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">長期規則建議</span>'
+            )
+            cmd_run = f"python -m engine.sec_watch --run-task {meta['id']} --mail"
+            has_rules = bool(t["validation"].get("rules"))
+            if has_rules:
+                cmd_block = (
+                    "# 若您確認要對全府 466 站執行此專案清查並匯出 CSV 報表寄回信箱：<br/>"
+                    f"{html_mod.escape(cmd_run)}"
+                )
+            else:
+                cmd_block = (
+                    "# 本通報無可自動比對之網頁規則（僅有長期網域/關鍵字建議），無法執行全府清查。<br/>"
+                    "# 請人工評估後，將建議網域加入 scan_settings gov_blacklist_extra 或常態關鍵字。"
+                )
+            preview_box = f"""
+          <div style="background:#f8f9fa;border-left:4px solid #28a745;padding:8px 12px;margin:10px 0;font-size:13px;">
+            <strong>宣告式規則 3 站試跑預覽：</strong>{html_mod.escape(prev_str)}
+          </div>
+          <div style="background:#2b2b2b;color:#f8f8f2;padding:10px 14px;border-radius:5px;font-family:Consolas,monospace;font-size:13px;">
+            {cmd_block}
+          </div>"""
+
         rejected = t["validation"].get("rejected") or []
         rejected_html = (
             "<br/><strong>已自動剔除之不安全/過寬規則：</strong>"
@@ -1615,30 +2059,210 @@ def build_advisory_mail_html(tasks_created: list[dict]) -> str:
             <strong>來源：</strong>{html_mod.escape(meta['source'])}
             （<a href="{html_mod.escape(meta['source_url'])}">{html_mod.escape(meta['source_url'])}</a>）<br/>
             <strong>判讀原因：</strong>{html_mod.escape(meta['reason'])}<br/>
-            <strong>擬定清查邏輯：</strong>{html_mod.escape(meta['action_summary'])}<br/>
+            <strong>處置說明：</strong>{html_mod.escape(meta['action_summary'])}<br/>
             <strong>建議效期：</strong>{html_mod.escape(meta['created_at'])} ～ {html_mod.escape(meta['expires_at'])}
             {extra_suggest}{rejected_html}
           </p>
-          <div style="background:#f8f9fa;border-left:4px solid #28a745;padding:8px 12px;margin:10px 0;font-size:13px;">
-            <strong>宣告式規則 3 站試跑預覽：</strong>{html_mod.escape(prev_str)}
-          </div>
-          <div style="background:#2b2b2b;color:#f8f8f2;padding:10px 14px;border-radius:5px;font-family:Consolas,monospace;font-size:13px;">
-            {cmd_block}
-          </div>
+          {preview_box}
         </div>
         """)
 
     return f"""<!DOCTYPE html>
 <html><body style="font-family:'Microsoft JhengHei',sans-serif;color:#222;line-height:1.6;max-width:820px;margin:0 auto;padding:16px;">
   <h2 style="color:#1a365d;border-bottom:2px solid #1a365d;padding-bottom:8px;">
-    🛡️ 政府資安情資感知通知（共 {len(tasks_created)} 項新任務草稿）
+    🛡️ 政府資安情資感知通知（共 {len(tasks_created)} 項重大網站資安警訊）
   </h2>
-  <p>系統自動巡檢政府資安警訊後，發現以下與<strong>政府網站外部檢測</strong>相關之通報，並已產生獨立清查腳本草稿（詳見附件 <code>task_*.py</code>）。</p>
+  <p>系統自動巡檢 CISA KEV 與 TWCERT/CC 資安警訊並通過<strong>「底層語言/共用平台白名單 + 重大風險門檻」</strong>後，篩選出以下與本府網站相關之項目：</p>
   <p style="color:#b45309;background:#fffbeb;padding:10px;border-radius:6px;border:1px solid #fde68a;">
-    <strong>安全保護機制：</strong>巡檢階段僅執行純資料規則比對，<strong>未動態執行任何外部生成程式碼，亦不會自動改動每晚正式深掃排程</strong>。審閱無誤後，可執行信中指令清查全府網站並匯出 CSV 報表。
+    <strong>雙軌分流保護機制：</strong><br/>
+    1. <strong>母表架構直查（免跑腳本）</strong>：凡屬 PHP、ASP.NET、IIS、Java/HyWeb、Apache、Nginx、WordPress 等底層架構漏洞，直接比對母表「系統語言與架構」欄匯出候選站 CSV（不產出 <code>task_*.py</code>、不呼叫 AI）。<br/>
+    2. <strong>臨時清查任務草稿</strong>：僅針對外部腳本/供應鏈污染（如 <code>polyfill.io</code>）或手動指定通報才產出 <code>task_*.py</code> 草稿。
   </p>
   {''.join(rows_html)}
 </body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 快速回填全府 466 站「系統語言與架構」欄 (--fill-arch)
+# ══════════════════════════════════════════════════════════════════════
+
+def _write_sheet_tech_rest_fallback(url_tech: dict[str, str]) -> int:
+    """當本機未安裝 gspread 時，使用 Google Cloud SDK 內建之 google.auth.jwt + Sheets REST API v4
+    以「網址」對鍵非破壞寫回「府內網站表」之「系統語言與架構」欄。
+    """
+    gcloud_tp = r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\lib\third_party"
+    if os.path.isdir(gcloud_tp) and gcloud_tp not in sys.path:
+        sys.path.insert(0, gcloud_tp)
+    import google.auth.crypt
+    import google.auth.jwt
+
+    with open(config.GA_KEY_FILE, encoding="utf-8") as f:
+        sa = json.load(f)
+    signer = google.auth.crypt.RSASigner.from_service_account_info(sa)
+    now = int(time.time())
+    claim = {
+        "iss": sa["client_email"],
+        "scope": "https://www.googleapis.com/auth/spreadsheets",
+        "aud": "https://oauth2.googleapis.com/token",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    assertion = google.auth.jwt.encode(signer, claim)
+    if isinstance(assertion, bytes):
+        assertion = assertion.decode("utf-8")
+    tok_req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }).encode("utf-8"),
+        method="POST",
+    )
+    with urllib.request.urlopen(tok_req, timeout=20, context=_ssl_verified_context()) as r:
+        token = json.loads(r.read().decode("utf-8"))["access_token"]
+
+    auth_hdr = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    sheet_id = config.MASTER_SHEET_ID
+    ws_name = config.SITE_LIST_WS
+    get_url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/"
+        f"{urllib.parse.quote(ws_name)}"
+    )
+    req = urllib.request.Request(get_url, headers=auth_hdr)
+    with urllib.request.urlopen(req, timeout=30, context=_ssl_verified_context()) as r:
+        vals = json.loads(r.read().decode("utf-8")).get("values", [])
+    if not vals or "網址" not in vals[0]:
+        raise ValueError("府內網站表標題列缺少「網址」欄")
+
+    hdr = vals[0]
+    iu = hdr.index("網址")
+    if "系統語言與架構" not in hdr:
+        itech = len(hdr)
+        col_letter = chr(ord("A") + itech) if itech < 26 else f"A{chr(ord('A') + itech - 26)}"
+        put_hdr_url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/"
+            f"{urllib.parse.quote(f'{ws_name}!{col_letter}1')}?valueInputOption=RAW"
+        )
+        req_h = urllib.request.Request(
+            put_hdr_url,
+            data=json.dumps({"values": [["系統語言與架構"]]}).encode("utf-8"),
+            headers=auth_hdr,
+            method="PUT",
+        )
+        urllib.request.urlopen(req_h, timeout=20, context=_ssl_verified_context()).read()
+    else:
+        itech = hdr.index("系統語言與架構")
+
+    col_letter = chr(ord("A") + itech) if itech < 26 else f"A{chr(ord('A') + itech - 26)}"
+    colt = []
+    updated = 0
+    for row in vals[1:]:
+        u = row[iu].strip() if len(row) > iu else ""
+        cur_t = row[itech].strip() if len(row) > itech else ""
+        new_t = (url_tech.get(u) or "").strip()
+        if new_t:
+            colt.append([new_t])
+            if new_t != cur_t:
+                updated += 1
+        else:
+            colt.append([cur_t])
+
+    rng = f"{ws_name}!{col_letter}2:{col_letter}{len(vals)}"
+    put_url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/"
+        f"{urllib.parse.quote(rng)}?valueInputOption=RAW"
+    )
+    req_u = urllib.request.Request(
+        put_url,
+        data=json.dumps({"values": colt}).encode("utf-8"),
+        headers=auth_hdr,
+        method="PUT",
+    )
+    urllib.request.urlopen(req_u, timeout=30, context=_ssl_verified_context()).read()
+    return updated
+
+
+def fill_arch_inventory(write_sheet: bool = True, limit: int = 0) -> dict:
+    """快速併發抓取全府 466 站首頁，執行被動式架構指紋識別 (`compliance.check_tech_and_security`)，
+    將 `系統語言與架構` 寫回本機 `private/TCGweb_466站對照清單_v2.csv` 與 Google Sheet「府內網站表」（以網址對鍵）。
+    """
+    from engine.compliance import _http_get, check_tech_and_security
+
+    if not os.path.exists(CSV_LIST):
+        raise FileNotFoundError(f"找不到網站清單 CSV: {CSV_LIST}")
+
+    with open(CSV_LIST, encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        all_rows = list(reader)
+
+    if "系統語言與架構" not in fieldnames:
+        fieldnames.append("系統語言與架構")
+
+    target_rows = [
+        r for r in all_rows
+        if (r.get("網址") or "").strip()
+        and (r.get("內容抓取方式") or "").strip() not in ("manual", "疑似失效")
+    ]
+    if limit > 0:
+        target_rows = target_rows[:limit]
+
+    print(f"===== 執行全府網站「系統語言與架構」快速盤點回填 (--fill-arch) =====")
+    print(f"目標站數: {len(target_rows)} 站 (16 執行緒併發首頁檢測)")
+
+    url_tech: dict[str, str] = {}
+    t0 = time.time()
+
+    def _probe_one(row: dict) -> tuple[str, str]:
+        u = (row.get("網址") or "").strip()
+        status, hdrs, body_bytes, err = _http_get(u, follow=True, head=False, verify=False)
+        if err or status is None:
+            return u, ""
+        ctype = (hdrs or {}).get("Content-Type") or (hdrs or {}).get("content-type") or ""
+        html_txt = _decode_bytes(body_bytes or b"", ctype) if body_bytes else ""
+        res = check_tech_and_security(u, hdrs or {}, html=html_txt, status=status)
+        return u, str(res.get("stack_summary") or "").strip()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        for i, (u, stack) in enumerate(ex.map(_probe_one, target_rows), 1):
+            if stack:
+                url_tech[u] = stack
+            if i % 50 == 0 or i == len(target_rows):
+                print(f"  進度 {i}/{len(target_rows)} 站 (成功識別 {len(url_tech)} 站, {time.time() - t0:.1f}s)")
+
+    # 1. 以「網址」對鍵更新本機 CSV 快照
+    csv_updated = 0
+    for r in all_rows:
+        u = (r.get("網址") or "").strip()
+        if u in url_tech and url_tech[u]:
+            if (r.get("系統語言與架構") or "").strip() != url_tech[u]:
+                csv_updated += 1
+            r["系統語言與架構"] = url_tech[u]
+        elif "系統語言與架構" not in r:
+            r["系統語言與架構"] = ""
+
+    tmp_csv = f"{CSV_LIST}.tmp.{os.getpid()}"
+    with open(tmp_csv, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(all_rows)
+    os.replace(tmp_csv, CSV_LIST)
+    print(f"[CSV] 已更新本機母表快照 {CSV_LIST}（共寫入 {len(url_tech)} 站架構，新增/變更 {csv_updated} 站）")
+
+    # 2. 以「網址」對鍵非破壞寫回 Google Sheet「府內網站表」
+    if write_sheet and url_tech:
+        try:
+            from engine import page_budget
+            page_budget.write_sheet({}, url_tech=url_tech)
+            print(f"[Sheet] 已透過 page_budget.write_sheet 將 {len(url_tech)} 站「系統語言與架構」寫回 Google Sheet「府內網站表」")
+        except Exception:
+            try:
+                n_sh = _write_sheet_tech_rest_fallback(url_tech)
+                print(f"[Sheet] 已透過 Sheets REST API 將 {len(url_tech)} 站「系統語言與架構」寫回 Google Sheet「府內網站表」(變更 {n_sh} 列)")
+            except Exception as e2:
+                print(f"[警告] Google Sheet 寫回失敗 ({type(e2).__name__}: {e2})，本機 CSV 快照已完成更新")
+
+    return {"probed": len(target_rows), "identified": len(url_tech), "csv_updated": csv_updated}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1835,6 +2459,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="政府資安情資感知與自動規則演進工具 (sec_watch)")
     ap.add_argument("--sync-blacklist", action="store_true", help="只同步 165 反詐騙與資安通報黑名單")
+    ap.add_argument("--fill-arch", action="store_true", help="快速併發檢測全府 466 站首頁並回填母表「系統語言與架構」欄")
     ap.add_argument("--from-url", default="", help="手動指定一篇資安公告網址，立即判讀並生成臨時任務草稿")
     ap.add_argument("--from-text", default="", help="手動傳入上級交辦公文或資安通報文字，立即生成臨時任務草稿")
     ap.add_argument("--title", default="手動輸入資安專案清查通報", help="搭配 --from-text 使用的通報標題")
@@ -1844,12 +2469,16 @@ def main():
     ap.add_argument("--mail", action="store_true", help="寄送管理員通知信")
     ap.add_argument("--mail-to", default=None, help="指定管理員收件信箱 (override)")
     ap.add_argument("--dry-run", action="store_true", help="預覽模式：不實寄信，印出判讀與試跑結果")
-    ap.add_argument("--limit", type=int, default=0, help="限制巡檢公告篇數或 --run-task 掃描站數 (測試用)")
+    ap.add_argument("--limit", type=int, default=0, help="限制巡檢公告篇數或 --run-task / --fill-arch 掃描站數 (測試用)")
     ap.add_argument("--force", action="store_true", help="強制重跑已處理過的公告，或強制執行已過期之任務")
     args = ap.parse_args()
 
     if args.list_tasks:
         list_tasks()
+        return
+
+    if args.fill_arch:
+        fill_arch_inventory(write_sheet=not args.dry_run, limit=args.limit)
         return
 
     if args.run_task:
@@ -1897,6 +2526,7 @@ def main():
             "pub_date": datetime.date.today().strftime("%Y-%m-%d"),
             "summary_raw": txt[:500],
             "full_text": txt,
+            "is_manual": True,
         })
     elif args.from_text:
         t = args.from_text.strip()
@@ -1908,8 +2538,26 @@ def main():
             "pub_date": datetime.date.today().strftime("%Y-%m-%d"),
             "summary_raw": t,
             "full_text": t,
+            "is_manual": True,
         })
     else:
+        # 2a. 先巡檢 CISA KEV 結構化 JSON（近 30 天新增之已遭積極利用漏洞）
+        kev_limit = args.limit if args.limit > 0 else 25
+        try:
+            kev_items = fetch_cisa_kev_items(lookback_days=30, limit=kev_limit)
+            new_kev = []
+            for it in kev_items:
+                prev_rec = seen_all.get(it["id"])
+                if args.force or not prev_rec or (
+                    prev_rec.get("status") == "error" and prev_rec.get("fail_count", 0) < MAX_ADVISORY_RETRIES
+                ):
+                    new_kev.append(it)
+            print(f"[Track 2] 巡檢 CISA KEV 已遭利用漏洞清單: 抓到 {len(kev_items)} 篇, 待判讀 {len(new_kev)} 篇")
+            candidates.extend(new_kev)
+        except Exception as e:
+            print(f"[警告] 巡檢 CISA KEV 失敗: {e}")
+
+        # 2b. 巡檢 TWCERT/CC RSS
         per_feed = args.limit if args.limit > 0 else 5
         for feed in DEFAULT_ADVISORY_FEEDS:
             try:
@@ -1932,7 +2580,7 @@ def main():
         candidates = candidates[:args.limit]
     cand_ids = {c["id"] for c in candidates}
 
-    # 2.5 先前已產出任務、但尚未成功寄信通知管理員者（pending_notify），本次一併重新通知
+    # 2.5 先前已產出任務/母表直查清單、但尚未成功寄信通知管理員者（pending_notify），本次一併重新通知
     tasks_pending: list[dict] = []
     for aid, rec in list(seen_all.items()):
         if rec.get("status") != "pending_notify" or aid in cand_ids:
@@ -1941,6 +2589,19 @@ def main():
         if not tpath or not os.path.exists(tpath):
             rec["status"] = "ok"
             rec["note"] = "任務檔已不存在,不再重送通知"
+            continue
+        if rec.get("category") == "ARCH_INVENTORY" and isinstance(rec.get("meta"), dict):
+            p_meta = rec["meta"]
+            if p_meta.get("expires_at", "9999-12-31") < datetime.date.today().strftime("%Y-%m-%d"):
+                rec["status"] = "ok"
+                rec["note"] = "通知已過期,不再重送"
+                continue
+            tasks_pending.append({
+                "advisory_id": aid,
+                "meta": p_meta,
+                "path": tpath,
+                "validation": {"preview": [], "rules": [], "rejected": []},
+            })
             continue
         try:
             p_meta, p_rules, _ = _parse_task_file(tpath)
@@ -1963,6 +2624,68 @@ def main():
     for item in candidates:
         print(f"\n  -> 判讀公告: {item['title']}")
         try:
+            is_manual = bool(item.get("is_manual"))
+            tech_match = match_foundation_whitelist(item.get("title", ""), item.get("vendor_product", ""))
+
+            # 守門員 A：自動巡檢時，必須命中「底層語言 / Web Server / 通用 CMS / 本府共用平台 / 供應鏈」白名單
+            if not is_manual and not tech_match:
+                seen_all[item["id"]] = {
+                    "title": item["title"],
+                    "url": item["url"],
+                    "status": "ok",
+                    "relevant": False,
+                    "note": "未命中底層語言/伺服器/共用平台白名單(屬個別商用或非Web系統)",
+                    "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                _persist_seen()
+                print("     [略過-守門員A] 非網站底層語言/伺服器/本府共用平台（個別商用系統不產草稿、0 AI 呼叫）")
+                continue
+
+            # 守門員 B：確認是否達重大風險門檻（KEV / CVSS >= 8.5 / RCE / SQLi / 認證繞過 / 在野利用）
+            full_text = item.get("full_text") or fetch_advisory_fulltext(
+                item.get("url", ""), item.get("summary_raw", ""), allow_insecure_fallback=is_manual
+            )
+            item["full_text"] = full_text
+            ok_sev, sev_reason = passes_severity_gate(
+                item.get("title", ""), full_text, is_kev=bool(item.get("is_kev"))
+            )
+            if not is_manual and not ok_sev:
+                seen_all[item["id"]] = {
+                    "title": item["title"],
+                    "url": item["url"],
+                    "status": "ok",
+                    "relevant": False,
+                    "note": sev_reason,
+                    "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                _persist_seen()
+                print(f"     [略過-守門員B] {sev_reason}")
+                continue
+
+            # 路徑 1 (ARCH_INVENTORY)：底層語言/伺服器/CMS/共用平台漏洞 → 直接查母表「系統語言與架構」欄，不產 task_*.py！
+            if tech_match and tech_match.get("route") == "ARCH_INVENTORY" and not is_manual:
+                arch_item = build_arch_inventory_report(item, tech_match, sev_reason)
+                meta = arch_item["meta"]
+                seen_all[item["id"]] = {
+                    "title": item["title"],
+                    "url": item["url"],
+                    "status": "pending_notify",
+                    "relevant": True,
+                    "category": "ARCH_INVENTORY",
+                    "task_id": meta["id"],
+                    "task_path": arch_item["path"],
+                    "meta": meta,
+                    "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                _persist_seen()
+                print(
+                    f"     [命中-母表架構直查] {tech_match['label']} | {sev_reason}\n"
+                    f"       -> 免產出腳本，已直接從母表篩出 {meta['matched_count']} 站候選清單: {arch_item['path']}"
+                )
+                tasks_created.append(arch_item)
+                continue
+
+            # 路徑 2 (TEMP_TASK)：外部腳本/供應鏈污染（如 polyfill.io）或管理員手動 --from-url / --from-text
             analysis = analyze_advisory(item)
             if not analysis.get("relevant"):
                 seen_all[item["id"]] = {
@@ -1978,12 +2701,12 @@ def main():
 
             task_id, task_path, val_report = build_task_file(item, analysis)
             meta = val_report["meta"]
-            # 任務已產出但「尚未通知」：寄信成功後才改為 notified
             seen_all[item["id"]] = {
                 "title": item["title"],
                 "url": item["url"],
                 "status": "pending_notify",
                 "relevant": True,
+                "category": meta.get("category", "TEMP_TASK"),
                 "task_id": task_id,
                 "task_path": task_path,
                 "preview": val_report["preview"],
@@ -1992,7 +2715,7 @@ def main():
             }
             _persist_seen()
 
-            print(f"     [命中] 分類={meta.get('category')} | 已產出任務草稿: {task_path}")
+            print(f"     [命中-臨時任務] 分類={meta.get('category')} | 已產出任務草稿: {task_path}")
             for rj in val_report.get("rejected") or []:
                 print(f"       [剔除規則] {rj}")
             if not val_report["rules"]:
@@ -2021,37 +2744,45 @@ def main():
     _persist_seen()
     all_tasks = tasks_created + tasks_pending
     if not all_tasks:
-        print("\n[Track 2] 本次新公告均無需建立外部網頁清查任務。")
+        print("\n[Track 2] 本次新公告均無需建立外部網頁清查任務或架構盤點通知。")
         return
     if tasks_pending:
-        print(f"\n[Track 2] 另有 {len(tasks_pending)} 項先前尚未成功通知之任務，本次一併通知。")
+        print(f"\n[Track 2] 另有 {len(tasks_pending)} 項先前尚未成功通知之項目，本次一併通知。")
 
+    n_arch = sum(1 for t in all_tasks if t["meta"].get("category") == "ARCH_INVENTORY")
+    n_script = len(all_tasks) - n_arch
     rcpt = _get_admin_recipient(args.mail_to)
-    subj = f"[資安情資感知] 發現 {len(all_tasks)} 項可執行之網站資安通報（含臨時清查腳本草稿）"
+    subj = f"[資安情資感知] 發現 {len(all_tasks)} 項重大網站資安通報（母表直查 {n_arch} 項 / 臨時腳本 {n_script} 項）"
     mail_html = build_advisory_mail_html(all_tasks)
-    attachments = [t["path"] for t in all_tasks]
+    attachments = list(dict.fromkeys(t["path"] for t in all_tasks if t.get("path") and os.path.exists(t["path"])))
 
     notified = False
     if args.dry_run or not args.mail:
         print(f"\n[通知預覽] 收件管理員: {rcpt or '(未設定 mail_override_to / --mail-to)'}")
         print(f"           信件主旨  : {subj}")
-        print(f"           附件腳本  : {', '.join(os.path.basename(a) for a in attachments)}")
+        print(f"           附件檔案  : {', '.join(os.path.basename(a) for a in attachments)}")
         for t in all_tasks:
-            if t["validation"].get("rules"):
+            cat = t["meta"].get("category")
+            if cat == "ARCH_INVENTORY":
+                print(
+                    f"           母表直查  : {t['meta']['id']} -> 命中 {t['meta'].get('matched_count', 0)} 站 "
+                    f"(CSV: {os.path.basename(t['path'])})"
+                )
+            elif t["validation"].get("rules"):
                 print(f"           一鍵執行  : python -m engine.sec_watch --run-task {t['meta']['id']} --mail")
             else:
                 print(f"           長期建議  : {t['meta']['id']}（無可清查規則，請人工評估建議網域/關鍵字）")
-        print("           ⚠ 本次未寄信，上述任務維持「待通知」，下次加 --mail 執行時會再次通知。")
+        print("           ⚠ 本次未寄信，上述項目維持「待通知」，下次加 --mail 執行時會再次通知。")
     elif not rcpt:
-        print("\n[警告] 未設定管理員信箱 (mail_override_to / --mail-to)，任務維持「待通知」，設定後下次執行會補寄。")
+        print("\n[警告] 未設定管理員信箱 (mail_override_to / --mail-to)，項目維持「待通知」，設定後下次執行會補寄。")
     else:
         try:
             from engine.mailer import send_mail
             send_mail(rcpt, subj, mail_html, attachments=attachments)
             notified = True
-            print(f"\n[通知] 已寄信給管理員 {rcpt}（{len(all_tasks)} 項任務）")
+            print(f"\n[通知] 已寄信給管理員 {rcpt}（{len(all_tasks)} 項通報）")
         except Exception as e:
-            print(f"\n[警告] 寄信失敗 ({type(e).__name__}: {e})，任務維持「待通知」，下次執行會補寄。")
+            print(f"\n[警告] 寄信失敗 ({type(e).__name__}: {e})，項目維持「待通知」，下次執行會補寄。")
 
     if notified:
         now_s = time.strftime("%Y-%m-%d %H:%M:%S")

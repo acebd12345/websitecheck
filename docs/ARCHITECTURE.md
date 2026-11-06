@@ -2,7 +2,7 @@
 
 > 本文件由程式碼全面走讀後整理，供日後回來快速上手。**只描述現況**。
 > 最近更新（2026-11）：
-> - **Phase 3（資安情資感知與被動架構/標頭資安檢測）**：新增 `engine/sec_watch.py`（Track 1：自動同步 `data.gov.tw` 165 反詐涉詐/博弈黑名單，先於 DNS O(1) 攔截並辨識反詐宣導頁、階段 2 保送判 A；Track 2：巡檢 TWCERT RSS 或手動公文，經 AI/啟發式轉為宣告式清查任務 `TASK_RULES`，含 `sre_parse` ReDoS 防護、市政樣板過寬規則剔除與嚴格 AST 白名單）、`compliance.check_tech_and_security`（零額外請求識別 11 大類系統語言架構與 PHP EOL / CSP / Session Cookie / CKEditor 等被動資安檢測，並自動寫回 Sheet「系統語言與架構」欄）、`webcheck_ai.mask_pii` 送 AI 前個資遮蔽。
+> - **Phase 3（資安情資感知與被動架構/標頭資安檢測）**：新增 `engine/sec_watch.py`（Track 1：自動同步 `data.gov.tw` 165 反詐涉詐/博弈黑名單，先於 DNS O(1) 攔截並辨識反詐宣導頁、階段 2 保送判 A；Track 2：巡檢 CISA KEV 結構化 JSON 與 TWCERT RSS，經「底層語言/共用平台標題白名單 + 重大風險門檻」雙層零成本守門員過濾個別民間公司私用系統，並分為 `ARCH_INVENTORY` 母表「系統語言與架構」直查免跑腳本與 `TEMP_TASK` 宣告式清查任務，支援 `--fill-arch` 快速回填全府 466 站架構欄位）、`compliance.check_tech_and_security`（零額外請求識別 11 大類系統語言架構與 PHP EOL / CSP / Session Cookie / CKEditor 等被動資安檢測，並自動寫回 Sheet「系統語言與架構」欄）、`webcheck_ai.mask_pii` 送 AI 前個資遮蔽。
 > - **寄信中繼與回饋閉環（2026-08~10）**：新增府內寄信中繼 `deploy/mailrelay/relay.py`（`method=relay`，支援多 token 與 CC/BCC）、稽核信三桶風險分流＋`#pin=` 自動登入回饋頁（`engine/pin_mailer.py` 每季輪替）、多收件人與密件副本（BCC）、單站報告轉 PDF 附件、`engine/whitelist_recheck.py` 月度白名單健檢，以及 `audit_links.py` 攔截站內 3xx 跨網域跳板（`EXT_REDIRECT`）、趨勢科技 ClickTime 包裝網址、Cloudflare 403 `curl` 複查與 `service.taipei` SPA 404 瀏覽器複查。
 > - **Phase 1~2 基礎（2026-07）**：試算表以「府內網站表」為單一母表、詞庫/分頁/白名單單一來源化（`scan_settings.py`）、`monthly_check.py` 退役併入 `engine/compliance.py`、`report_html.py` 報告產生器、`schedule.py` 月度排程、GitHub Actions CI。
 
@@ -16,8 +16,8 @@
 2. **外部連結網域被搶註 / 掛馬 / 涉詐攔截**（最核心也最花心力的部分）——
    政府網站常在新聞稿、活動頁連到「當年委外廠商的活動官網」。活動結束、網域過期釋出後，**博弈/色情/詐騙集團會把過期網域註冊走**，導致政府網站無意間幫賭場或詐騙站導流。數發部 115/6/8 發文要求各機關清查「委外案或活動結束後未移除的網址」，本專案將清查自動化：
    **爬完整站 → 收集所有對外連結（含站內 3xx 轉址跳板） → 比對 165 反詐黑名單 + 檢測存活與賭博/色情/停放關鍵字 → 地端/雲端 AI 二次複查 → 按局處自動寄發通知信與回饋頁連結**。
-3. **突發資安情資感知與全府快速清查（`sec_watch`）**——
-   當 TWCERT/CC 發布新漏洞警訊或上級交辦臨時清查公文（例如清查全府網站是否引用遭污染的 `polyfill.io` 或特定高風險元件）時，自動判讀是否可從外部網頁檢測、產出經安全沙盒驗證的宣告式清查規則並寄信通知管理員，管理員一鍵即可在 1~2 分鐘內掃完全府 466 站首頁並匯出報表。
+3. **突發資安情資感知與雙軌分流清查（`sec_watch`）**——
+   當 CISA KEV（已知遭積極利用漏洞清單）或 TWCERT/CC 發布重大漏洞警訊時，先經「底層語言/共用平台標題白名單 + 重大風險門檻」雙層零成本守門員過濾個別民間公司私用系統：凡屬 PHP、ASP.NET、IIS、Java/HyWeb、Apache、Nginx、Node.js、WordPress、CCMS 等底層架構漏洞，**免產出 `.py` 腳本、零 AI 呼叫**，直接查詢母表「系統語言與架構」欄匯出受影響候選網站 CSV 寄給管理員；若屬第三方腳本供應鏈污染（如 `polyfill.io`）或上級交辦臨時清查公文，則產出經安全沙盒驗證的宣告式清查規則，一鍵即可在 1~2 分鐘內掃完全府 466 站首頁。
 
 **核心難點在於「不能亂喊狼來了」**：反毒/反詐宣導頁會提到「賭博/詐騙」、藝文報導會出現敏感字眼、法文網頁的 `spécialiste` 會誤撞 `cialis`、ASP.NET 網站頁尾連到友站 `.php` 不代表它是 PHP 網站——因此本專案透過**多層防誤報機制**（詳見 §5）確保報告公信力。
 
@@ -100,7 +100,7 @@ websitecheck/
 | `__init__.py` | — | 整併說明 docstring |
 | **`fetch_layered.py`** | 地基 | ★ **靜態優先分層抓取**。先靜態抓 → `detect_shell` 判是否為 JS 空殼/frameset/內容過少 → 僅在必要且 `allow_render=True` 時升級 Playwright 渲染。內建 `NEVER_RENDER` (`wifi.taipei`) 與 `FORCE_MANUAL` (`travel.taipei`) 保護名單 |
 | `dates.py` | 地基 | 從 HTML 抽取「最新更新日期」並正規化 |
-| **`sec_watch.py`** | 地基/上層 | ★★ **政府資安情資感知模組**。Track 1：同步 165 反詐開放資料集與補充黑名單至 `private/gov_blacklist.json`（單字元來源碼低記憶體設計），供 `audit_links` O(1) 比對；Track 2：巡檢 TWCERT RSS 或手動公文，經 AI/啟發式轉為宣告式規則 `TASK_RULES`（含 ReDoS 語法樹防護、過寬規則剔除、AST 白名單），寄信通知管理員並支援 `--run-task` 全府首頁快掃 |
+| **`sec_watch.py`** | 地基/上層 | ★★ **政府資安情資感知模組**。Track 1：同步 165 反詐開放資料集與補充黑名單至 `private/gov_blacklist.json`（單字元來源碼低記憶體設計），供 `audit_links` O(1) 比對；Track 2：巡檢 CISA KEV JSON 與 TWCERT RSS，經雙層零成本守門員過濾後分流為 `ARCH_INVENTORY`（母表「系統語言與架構」直查匯出 CSV，免產出 `.py`）與 `TEMP_TASK`（宣告式規則 `TASK_RULES`，含 ReDoS 防護與 AST 白名單），並支援 `--fill-arch` 全府架構快速回填與 `--run-task` 快掃 |
 | **`crawl.py`** | 中層 | 健康向深層 BFS 爬蟲（`crawl_site`），供 `scan.py` 使用 |
 | `page_budget.py` | 中層 | 每站頁數自適應與母表回寫：管理 `TCGweb_466站對照清單_v2.csv` 快照更新、`get_cap`（上次頁數+100），並在深掃後將「頁數」、「頁數更新日」與「系統語言與架構」寫回府內網站表 |
 | **`full_overnight.py`** | 上層 | ★★ **全 466 站四階段深度稽核主驅動**。整合 `audit_links`、`compliance`、`sec_watch`、`page_budget`、`report_html` 與 `mailer`。支援 `--schedule-today`、`--verify`、`--resume`、`--force-cap` |
@@ -168,7 +168,9 @@ websitecheck/
 
 詳見 **[docs/SEC_INTEL_DESIGN.md](SEC_INTEL_DESIGN.md)**：
 - **Track 1（結構化黑名單）**：自動同步 `data.gov.tw` 165 反詐騙兩大資料集與 `scan_settings` 的 `gov_blacklist_extra`，排除共用平台整域封鎖、收斂大量涉詐子網域，寫入 `private/gov_blacklist.json`，於外連檢測時自動生效。
-- **Track 2（資安警訊與臨時清查任務）**：巡檢 TWCERT/CC RSS 或由管理員傳入 `--from-url` / `--from-text`，透過 AI JSON 判讀或啟發式規則抽取，經 `make_regex_safe`（防 ReDoS）與市政網頁樣板比對（防過寬誤報）後，生成 `private/sec_tasks/task_<id>.py` 並寄信通知管理員；管理員確認後執行 `--run-task <id> --mail` 即可在 1~2 分鐘內完成全府 466 站首頁清查。
+- **Track 2（雙層零成本守門員 & 雙軌分流處置）**：巡檢 CISA KEV 結構化 JSON 與 TWCERT/CC RSS，先以**守門員 A（僅比對標題之底層語言/伺服器/共用平台白名單）**直接剔除個別民間公司私用系統（0 AI 呼叫、0 產檔），再以**守門員 B（KEV / CVSS >= 8.5 / RCE / SQLi / 認證繞過 / 在野利用）**把關重大風險：
+  1. **路徑 1（`ARCH_INVENTORY` 母表架構直查）**：針對 PHP、ASP.NET、IIS、Java/HyWeb、Node.js、WordPress、CCMS 等底層架構漏洞，直接查詢母表「系統語言與架構」欄匯出 `sec_arch_<YYYYMMDD>_<tech>.csv` 寄給管理員（不產出 `task_*.py`；可隨時用 `--fill-arch` 快速回填全府 466 站架構欄位）。
+  2. **路徑 2（`TEMP_TASK` 臨時清查腳本草稿）**：僅針對外部腳本供應鏈污染（如 `polyfill.io`）或管理員手動 `--from-url` / `--from-text`，才產出 `private/sec_tasks/task_<id>.py`，管理員確認後執行 `--run-task <id> --mail` 即可完成全府 466 站首頁清查。
 
 ---
 
@@ -228,10 +230,12 @@ python -m engine.full_overnight --verify <報告目錄>
 python -m engine.mailer <報告目錄> --dry-run
 python -m engine.mailer <報告目錄> --mail-to <測試收件人>
 
-# ── 2. 政府資安情資感知與臨時清查任務 (sec_watch) ──
-# 同步 165 黑名單 + 巡檢 TWCERT 新公告(加 --mail 有新任務即寄給管理員)
+# ── 2. 政府資安情資感知與雙軌分流清查 (sec_watch) ──
+# 同步 165 黑名單 + 巡檢 CISA KEV 與 TWCERT 新公告(加 --mail 有新通報即寄給管理員)
 python -m engine.sec_watch --mail
 python -m engine.sec_watch --dry-run
+# 一次快速回填全府 466 站「系統語言與架構」欄(16 執行緒併發首頁檢測，同步更新 CSV 與 Google Sheet)
+python -m engine.sec_watch --fill-arch
 # 只同步 165 反詐黑名單
 python -m engine.sec_watch --sync-blacklist
 # 手動輸入交辦公文或網址產出臨時清查腳本草稿

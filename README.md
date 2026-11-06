@@ -19,8 +19,9 @@
   - 只掃某局處：`--org 教育局`；定點重測：`--only <關鍵字>`；淺掃驗證：`--force-cap 20`；中斷續跑：`--resume <報告目錄>`
   - 不重爬、對既有報告重跑階段 2~4 AI 複查：`python -m engine.full_overnight --verify <報告目錄>`
   - 對既有報告補寄：`python -m engine.mailer <報告目錄> [--dry-run] [--mail-to <測試信箱>]`
-- **資安情資感知與臨時清查任務（`sec_watch`）**：
-  - 同步 165 反詐黑名單 + 巡檢 TWCERT 新公告：`python -m engine.sec_watch --mail`（預覽加 `--dry-run`）
+- **資安情資感知與雙軌分流清查（`sec_watch`）**：
+  - 同步 165 反詐黑名單 + 巡檢 CISA KEV 與 TWCERT 新公告（雙層守門員過濾個別廠商系統，底層語言/共用平台漏洞直接查母表架構匯出 CSV）：`python -m engine.sec_watch --mail`（預覽加 `--dry-run`）
+  - 一次快速回填全府 466 站「系統語言與架構」欄：`python -m engine.sec_watch --fill-arch`
   - 手動餵入交辦公文或網址產出清查任務：`python -m engine.sec_watch --from-url <網址> --mail` 或 `--from-text "<內容>" --mail`
   - 一鍵對全府 466 站執行臨時清查任務：`python -m engine.sec_watch --run-task <任務ID> --mail`（查看任務：`--list-tasks`）
 - **HTML 報告產生**（單站+全市，吃 AI 複查降級與合規紅綠燈）：`python -m engine.report_html --zip`
@@ -87,7 +88,7 @@ websitecheck/
 | 文件 | 內容 |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系統全貌、資料流、關鍵設計決策、技術債 |
-| [SEC_INTEL_DESIGN.md](docs/SEC_INTEL_DESIGN.md) | 政府資安情資感知（165 黑名單自動攔截 + TWCERT 警訊轉宣告式清查任務）設計與實作規格 |
+| [SEC_INTEL_DESIGN.md](docs/SEC_INTEL_DESIGN.md) | 政府資安情資感知（165 黑名單自動攔截 + CISA KEV/TWCERT 雙層守門員、母表架構直查與宣告式清查任務）設計與實作規格 |
 | [SECURITY_CLOUD.md](docs/SECURITY_CLOUD.md) | 資安清單／上雲機敏處理指引（哪些不可公開、怎麼注入） |
 
 ## 授權
