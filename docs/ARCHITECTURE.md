@@ -25,6 +25,57 @@
 
 ## 2. 子系統分工與單一事實來源
 
+```mermaid
+flowchart TD
+    subgraph SSoT["資料單一事實來源與公開資安情資"]
+        GS["Google 試算表母表 (TaipeiCityGovWebsiteCheck)<br/>府內網站表(466站) / 掃描設定 / 聯絡人 / 局處PIN / 30天排程"]
+        GOV165["data.gov.tw 165 反詐開放資料<br/>(停止解析涉詐網站 + 假投資博弈網站)"]
+        KEV_RSS["CISA KEV 已遭利用漏洞 JSON +<br/>TWCERT/CC RSS (TVN + 資安新聞)"]
+    end
+
+    subgraph SecWatch["資安情資感知與雙軌分流引擎 (engine/sec_watch.py)"]
+        SW_T1["Track 1：165 黑名單正規化與子網域收斂<br/>(private/gov_blacklist.json)"]
+        SW_GATE["Track 2：雙層零成本守門員<br/>(守門員A 底層架構白名單 + 守門員B 重大風險門檻)"]
+        SW_P1["路徑 1：母表架構直查 (ARCH_INVENTORY)<br/>比對母表「系統語言與架構」匯出受影響站 CSV"]
+        SW_P2["路徑 2：供應鏈污染 / 手動通報規則生成 (TEMP_TASK)<br/>mask_pii() + 高階推理模型 sec_watch_ai_model (gemini-4-argon)<br/>ReDoS 防護 + AST 語法樹白名單 + 3 站試跑 → task_id.py"]
+    end
+
+    subgraph Pipeline["全府 466 站四階段深度稽核主線 (engine/full_overnight.py)"]
+        P0["排程與頁數預算 (schedule.py / page_budget.py)<br/>巨站獨立日 + 30天貪婪裝箱均衡排程"]
+        subgraph Stage1["階段 1：分層爬蟲、外連初篩與被動資安/合規體檢 (ProcessPoolExecutor)"]
+            FL["靜態優先分層擷取 (fetch_layered.py)<br/>92% 靜態 HTTP 擷取 / 8% JS 空殼升級 Playwright"]
+            AL["外連稽核引擎 (daily/audit_links.py)<br/>BFS 爬巡 + 攔截站內 3xx 跨網域跳板 (EXT_REDIRECT)<br/>先於 DNS 比對 165 黑名單 + 敏感詞邊界初篩 + 根路徑探測"]
+            COMP["合規與被動架構/資安檢測 (engine/compliance.py)<br/>HTTPS/TLS/HSTS/RWD/無障礙 + 站內深爬 (deep_check.py)<br/>11 大類系統架構指紋識別 + CSP/Cookie/PHP EOL 檢視"]
+        end
+        Stage2["階段 2：AI 全文語意複查 (monthly/webcheck_ai.py)<br/>抓前 4,000 字 + mask_pii() 個資遮蔽<br/>輕量模型 ai_model (gemini-2.5-flash-lite / 地端 vLLM)<br/>判讀 A(博弈色情) / B(停放出售) / C(宣導誤報排除) / ?(待確認)"]
+        Stage3["階段 3：HTML/HTTP 入侵證據定性 (characterize)<br/>剖析原始碼判定：隱藏掛馬 / 網域易主 / 可見注入 / 停放失效"]
+        Stage4["階段 4：報告產製與分機關通報 (report_html.py / mailer.py)<br/>產出單站與全市 HTML/PDF 報告 + 三桶風險分流"]
+    end
+
+    subgraph Delivery["通報寄信與承辦回饋閉環"]
+        RELAY["寄信通道 (Outlook / Gmail / 府內中繼 deploy/mailrelay)<br/>按局處寄送(含 BCC) + 嵌入 92 日效期 #pin= 自動登入按鈕"]
+        FB["GAS 線上回饋系統 + PIN 輪替 (pin_mailer.py)<br/>承辦人提報 AI 誤判 / 回報處理進度 / 申請聯絡人異動"]
+    end
+
+    GS <-->|"同步站單/詞庫 & 回寫頁數與11類系統架構"| P0
+    GOV165 & GS --> SW_T1
+    SW_T1 -->|"O(1) 前置攔截"| AL
+    KEV_RSS --> SW_GATE
+    SW_GATE -->|"底層語言/Web Server/CMS"| SW_P1
+    SW_GATE -->|"外部 JS 供應鏈 / 手動交辦"| SW_P2
+    GS -.->|"讀取系統語言與架構欄"| SW_P1
+    SW_P1 & SW_P2 -->|"寄送管理員確認 (Human-in-the-Loop)"| RELAY
+
+    P0 --> Stage1
+    FL --> AL & COMP
+    AL -->|"SUSPICIOUS 候選外連<br/>(165 黑名單非宣導頁保送判 A)"| Stage2
+    Stage2 -->|"A / B 類異常"| Stage3
+    Stage3 & COMP --> Stage4
+    Stage4 --> RELAY
+    RELAY --> FB
+    FB -->|"寫回「局處回報」與「承辦更新申請」分頁"| GS
+```
+
 | 子系統 | 資料夾 | 頻率 | 做什麼 | 產出 |
 |---|---|---|---|---|
 | **合規檢核輔助** | `monthly/` | 每月 / 隨深掃 | `monthly_check.py` 已退役；檢查邏輯搬進 `engine/compliance.py`。保留 `deep_check.py`（被 compliance 匯入）、`update_excel.py`（讀 `compliance.json` 產 Excel）、`webcheck_ai.py`（共用 AI 與 `mask_pii`） | 檢核表 Excel |
@@ -118,11 +169,40 @@ websitecheck/
 
 ### 4.1 全站深度稽核（主線，`full_overnight.py` 四階段 + 合規架構 + 寄信）
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Cron as 每日排程 (full_overnight)
+    participant Sheet as Google 試算表母表
+    participant SW as sec_watch (165 + KEV/TWCERT)
+    participant S1 as 階段1: 爬蟲 + 合規/11類架構
+    participant AI_Lite as 階段2: 輕量 AI (gemini-2.5-flash-lite)
+    participant S3 as 階段3: HTML 入侵證據定性
+    participant Mail as 階段4: report_html + mailer (relay)
+
+    Cron->>Sheet: 1. scan_settings.refresh() + page_budget.refresh_csv()
+    Cron->>SW: 2. refresh_blacklist() 同步 165 涉詐黑名單 (Track 1)
+    Cron->>SW: 3. run_advisory_watch() 巡檢 CISA KEV / TWCERT (Track 2)
+    SW-->>Mail: 若命中底層架構(CSV)或供應鏈(gemini-4-argon 產 .py) → 寄信通知管理員
+
+    Cron->>S1: 4. ProcessPoolExecutor 平行掃描當日排程站點
+    S1->>S1: fetch_layered (92% HTTP / 8% Playwright)
+    S1->>S1: audit_links (外連存活 + 165 比對 + 敏感詞邊界 + 根路徑探測)
+    S1->>S1: compliance (HTTPS/RWD/無障礙 + 11 類系統架構與資安標頭)
+    S1->>Sheet: 5. page_budget.write_sheet() 非破壞回寫「頁數」與「系統語言與架構」
+
+    Cron->>AI_Lite: 6. 對 SUSPICIOUS 外連抓前 4,000 字 + mask_pii() 送審
+    AI_Lite-->>Cron: 回傳 A(博弈色情) / B(停放) / C(宣導誤報) / ?(待確認)
+    Cron->>S3: 7. 對 A / B 類剖析原始 HTML 判定隱藏掛馬 / 網域易主 / 可見注入
+    Cron->>Mail: 8. 產出單站 HTML/PDF 報告 + 三桶分流 + 嵌入 #pin= 寄送各局處承辦
+```
+
 ```
 啟動準備：
   1. scan_settings.refresh()          ← 從 Sheet「掃描設定」更新詞庫/白名單/skip_hosts 快取
   2. sec_watch.refresh_blacklist()    ← 同步 data.gov.tw 165 反詐黑名單至 private/gov_blacklist.json
   3. page_budget.refresh_csv()        ← 從 Sheet「府內網站表」下載最新 466 站快照 CSV
+  4. sec_watch.run_advisory_watch()   ← 巡檢 CISA KEV 與 TWCERT 新公告(Track 2)，有命中即寄管理員
    │
    ▼
 【階段1】站層級多行程平行 (ProcessPoolExecutor, max_tasks_per_child=1)
