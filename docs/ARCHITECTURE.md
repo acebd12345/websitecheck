@@ -43,9 +43,8 @@ flowchart TD
     subgraph Pipeline["全府 466 站四階段深度稽核主線 (engine/full_overnight.py)"]
         P0["排程與頁數預算 (schedule.py / page_budget.py)<br/>巨站獨立日 + 30天貪婪裝箱均衡排程"]
         subgraph Stage1["階段 1：分層爬蟲、外連初篩與被動資安/合規體檢 (ProcessPoolExecutor)"]
-            FL["靜態優先分層擷取 (fetch_layered.py)<br/>92% 靜態 HTTP 擷取 / 8% JS 空殼升級 Playwright"]
-            AL["外連稽核引擎 (daily/audit_links.py)<br/>BFS 爬巡 + 攔截站內 3xx 跨網域跳板 (EXT_REDIRECT)<br/>先於 DNS 比對 165 黑名單 + 敏感詞邊界初篩 + 根路徑探測"]
-            COMP["合規與被動架構/資安檢測 (engine/compliance.py)<br/>HTTPS/TLS/HSTS/RWD/無障礙 + 站內深爬 (deep_check.py)<br/>11 大類系統架構指紋識別 + CSP/Cookie/PHP EOL 檢視"]
+            AL["外連稽核引擎 (daily/audit_links.py)<br/>BFS 爬巡：依母表「內容抓取方式」約 92% 站全程靜態 HTTP，<br/>僅 playwright 站(約 8%)經 detect_shell 判空殼才渲染<br/>攔截站內 3xx 跨網域跳板 (EXT_REDIRECT)<br/>先於 DNS 比對 165 黑名單 + 敏感詞邊界初篩 + 根路徑探測"]
+            COMP["合規與被動架構/資安檢測 (engine/compliance.py)<br/>HTTPS/TLS/HSTS/RWD/無障礙 + 11 大類系統架構指紋識別<br/>+ CSP/Cookie/PHP EOL 檢視；合規檢核=是 加跑站內深爬 (deep_check.py)"]
         end
         Stage2["階段 2：AI 全文語意複查 (monthly/webcheck_ai.py)<br/>抓前 4,000 字 + mask_pii() 個資遮蔽<br/>輕量模型 ai_model (gemini-2.5-flash-lite / 地端 vLLM)<br/>判讀 A(博弈色情) / B(停放出售) / C(宣導誤報排除) / ?(待確認)"]
         Stage3["階段 3：HTML/HTTP 入侵證據定性 (characterize)<br/>剖析原始碼判定：隱藏掛馬 / 網域易主 / 可見注入 / 停放失效"]
@@ -66,8 +65,7 @@ flowchart TD
     GS -.->|"讀取系統語言與架構欄"| SW_P1
     SW_P1 & SW_P2 -->|"寄送管理員確認 (Human-in-the-Loop)"| RELAY
 
-    P0 --> Stage1
-    FL --> AL & COMP
+    P0 --> AL & COMP
     AL -->|"SUSPICIOUS 候選外連<br/>(165 黑名單非宣導頁保送判 A)"| Stage2
     Stage2 -->|"A / B 類異常"| Stage3
     Stage3 & COMP --> Stage4
@@ -186,7 +184,7 @@ sequenceDiagram
     SW-->>Mail: 若命中底層架構(CSV)或供應鏈(gemini-4-argon 產 .py) → 寄信通知管理員
 
     Cron->>S1: 4. ProcessPoolExecutor 平行掃描當日排程站點
-    S1->>S1: fetch_layered (92% HTTP / 8% Playwright)
+    S1->>S1: 依「內容抓取方式」決定渲染 (約 92% 靜態 HTTP / 8% playwright 站)
     S1->>S1: audit_links (外連存活 + 165 比對 + 敏感詞邊界 + 根路徑探測)
     S1->>S1: compliance (HTTPS/RWD/無障礙 + 11 類系統架構與資安標頭)
     S1->>Sheet: 5. page_budget.write_sheet() 非破壞回寫「頁數」與「系統語言與架構」
