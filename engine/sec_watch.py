@@ -1463,7 +1463,7 @@ AI_TRIAGE_USER_PROMPT = """請分析以下資安公告，判斷是否能透過�
 
 
 def _ask_ai_json(advisory_text: str) -> dict | None:
-    """使用專屬 JSON System Prompt 呼叫 config 設定之 AI 供應商（支援 sec_watch_ai_model 獨立指定高階模型如 gemini-4-argon，未設則沿用 ai_model）。"""
+    """使用專屬 JSON System Prompt 呼叫 config 設定之 AI 供應商（模型取自 config.SEC_WATCH_AI_MODEL：可由 sec_watch_ai_model 指定；未設時 gemini 供應商預設 gemini-4-argon，其他供應商沿用 ai_model）。"""
     import webcheck_ai
     model = (getattr(config, "SEC_WATCH_AI_MODEL", None) or webcheck_ai.MODEL or "").strip()
     if not model or "your_model" in model.lower():

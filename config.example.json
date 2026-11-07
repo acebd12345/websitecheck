@@ -18,7 +18,7 @@
   "relay": { "url": "https://YOUR-RELAY-HOST", "token": "YOUR_RELAY_TOKEN", "ca_file": "" },
   "schedule": { "groups": 5, "log_keep_days": 3 },
 
-  "_說明_ai_provider": "openai / anthropic / gemini（見 README）；ai_model 用於日常外連語意判讀（如 gemini-2.5-flash-lite），sec_watch_ai_model 可選填獨立指定資安情資規則/腳本生成之高階模型（如 gemini-4-argon，留空則沿用 ai_model）",
+  "_說明_ai_provider": "openai / anthropic / gemini（見 README）；ai_model 用於日常外連語意判讀（如 gemini-2.5-flash-lite），sec_watch_ai_model 可選填獨立指定資安情資規則/腳本生成之高階模型（如 gemini-4-argon；留空時 ai_provider=gemini 預設 gemini-4-argon，其他供應商沿用 ai_model）",
   "_說明_mail": "method=outlook(本機Windows) 或 gmail(Linux主機SMTP，填 gmail.app_password) 或 relay(經府內寄信中繼 deploy/mailrelay，填 relay.url/token；中繼用自簽憑證時 ca_file 指向其 CA 檔)",
   "_說明_清單與詞庫來源": "唯一站清單母表為試算表「府內網站表」(site_list_ws)；詞庫、白名單(content_whitelist)、免檢名單(skip_hosts)與手動補充黑名單(gov_blacklist_extra)統一由試算表「掃描設定」分頁管理(scan_settings.py)"
 }

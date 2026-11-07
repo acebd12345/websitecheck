@@ -52,7 +52,7 @@ pip install -r requirements.txt
 ### AI 供應商（高低階模型分流，送審前自動經 `mask_pii` 遮蔽個資）
 
 - **日常外連語意判讀（`ai_model`）**：高頻、大量外部網頁之 A/B/C 語意分類，建議設定輕量快速模型（如 `gemini-2.5-flash-lite`）以控制成本。
-- **資安情資規則與清查腳本生成（`sec_watch_ai_model`，選填）**：低頻、需高精準度推理與撰寫正規表示式之 `sec_watch` 任務，可獨立指定高階推理模型（如 `gemini-4-argon`；留空則沿用 `ai_model`）。
+- **資安情資規則與清查腳本生成（`sec_watch_ai_model`，選填）**：低頻、需高精準度推理與撰寫正規表示式之 `sec_watch` 任務，可獨立指定高階推理模型（如 `gemini-4-argon`；留空時，`ai_provider=gemini` 預設用 `gemini-4-argon`，其他供應商沿用 `ai_model`）。
 
 | `ai_provider` | 走法 | `ai_model`（外連初篩）範例 | `sec_watch_ai_model`（規則生成）範例 | 需裝套件 |
 |---|---|---|---|---|
