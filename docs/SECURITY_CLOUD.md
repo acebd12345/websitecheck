@@ -19,7 +19,7 @@
 | **產出資料** | `private/reports/`、`檢核表/`、`logs/`、`problems_*.csv`、`links_*.jsonl` | ✅ `private/` + 副檔名規則 | 雲端寫物件儲存（GCS/S3）私有 bucket，不進 git |
 
 ## B. 可公開（已在 repo，確認無虞）
-- 全部**程式碼**（`engine/`、`daily/`、`monthly/`、`config.py`）— 只讀設定、不含硬編密鑰（已掃描確認）。
+- 全部**程式碼**（`engine/`、`daily/`、`monthly/`、`config.py`）— 只讀設定、未將金鑰直接寫入程式碼（已掃描確認）。
 - `config.example.json` — 佔位符範本，無真值。
 - `README.md`、`docs/`（含本文件；注意 docs 內**不得**再出現內部主機名/PII）。
 - `LICENSE`、`.gitignore`、`.gitattributes`、`requirements.txt`。
@@ -27,7 +27,7 @@
 ## C. 現況驗證結果（推送前已做）
 - `git check-ignore private/` → 命中，`private/` 整包排除。
 - `git ls-files private/` → **0 檔**被追蹤。
-- tracked 檔密鑰 pattern 掃描 → 僅「從 config 讀值」的程式碼，**無硬編密鑰**。
+- tracked 檔密鑰 pattern 掃描 → 僅「從 config 讀值」的程式碼，**未將金鑰直接寫入程式碼**。
 - 唯一被追蹤的設定檔 = `config.example.json`（範本）。
 - 已從 `docs/ARCHITECTURE.md` 抹除內部 AI 主機名（commit 81bb762），並確認本 docs 各檔不再出現該主機名全稱。
 

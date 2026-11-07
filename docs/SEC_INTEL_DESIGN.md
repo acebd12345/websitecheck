@@ -7,12 +7,12 @@
 
 ## 1. 核心設計原則
 
-因應實務上政府資安通報分成「常態黑名單」與「專案/突發性清查」，本模組採 **Track 1（結構化黑名單熱更新）+ Track 2（宣告式規則清查任務草稿）** 雙軌設計，並嚴格區分放行權限：
+因應實務上政府資安通報分成「常態黑名單」與「專案/突發性清查」，本模組採 **Track 1（結構化黑名單自動更新）+ Track 2（宣告式規則清查任務草稿）** 雙軌設計，並嚴格區分放行權限：
 
 | 軌道 | 情資類型 | 實作來源 | 任務屬性 | 生效與放行策略 |
 |---|---|---|---|---|
-| **Track 1**<br/>結構化黑名單 | 政府依法停止解析或通報之涉詐、博弈網域與特定子路徑（IoC） | 政府資料開放平臺（`data.gov.tw` 165 遭停止解析涉詐網站 `176455`、假投資博弈網站 `160055`）＋ `scan_settings` 的 `gov_blacklist_extra` | **長期性任務** | **全自動生效**<br/>每次深掃前自動拉取更新至 `private/gov_blacklist.json`，由 `audit_links.py` 先於 DNS 解析直接攔截 |
-| **Track 2-Path 1**<br/>母表架構直查 (`ARCH_INVENTORY`) | 網站底層語言、Web Server、通用 CMS 或本府共用平台之重大漏洞（如 PHP、ASP.NET、IIS、Java/HyWeb/Spring、Apache、Nginx、Node.js、WordPress、CCMS、NSS） | CISA KEV（已知遭積極利用漏洞 JSON）＋ TWCERT/CC（TVN 漏洞公告與資安新聞 RSS） | **架構盤點通知** | **免產出 `.py` 腳本、零 AI 成本**<br/>通過雙層守門員後，直接查詢母表「系統語言與架構」欄與最新合規報告，匯出候選受影響網站清單 `private/reports/sec_arch_<id>.csv` 寄給管理員 |
+| **Track 1**<br/>結構化黑名單 | 政府依法停止解析或通報之涉詐、博弈網域與特定子路徑（IoC） | 政府資料開放平臺（`data.gov.tw` 165 遭停止解析涉詐網站 `176455`、假投資博弈網站 `160055`）＋ `scan_settings` 的 `gov_blacklist_extra` | **長期性任務** | **全自動生效**<br/>每次深度掃描前自動拉取更新至 `private/gov_blacklist.json`，由 `audit_links.py` 先於 DNS 解析直接攔截 |
+| **Track 2-Path 1**<br/>管理主表架構直查 (`ARCH_INVENTORY`) | 網站底層語言、Web Server、通用 CMS 或本府共用平台之重大漏洞（如 PHP、ASP.NET、IIS、Java/HyWeb/Spring、Apache、Nginx、Node.js、WordPress、CCMS、NSS） | CISA KEV（已知遭積極利用漏洞 JSON）＋ TWCERT/CC（TVN 漏洞公告與資安新聞 RSS） | **架構盤點通知** | **免產出 `.py` 腳本、無須呼叫 AI**<br/>通過雙層守門員後，直接查詢管理主表「系統語言與架構」欄與最新合規報告，匯出候選受影響網站清單 `private/reports/sec_arch_<id>.csv` 寄給管理員 |
 | **Track 2-Path 2**<br/>突發資安警訊 (`TEMP_TASK` / `LONG_TERM_RULE`) | 第三方 JS 供應鏈污染（如 `polyfill.io`）、憑證信任事件，或管理員手動交辦之專案清查 | TWCERT/CC RSS（命中供應鏈白名單）或手動餵入公文/網址（`--from-url` / `--from-text`） | **臨時性任務 / 長期建議** | **先寄信給管理員**<br/>自動產出含純資料規則（`TASK_RULES`）之獨立任務檔 `private/sec_tasks/task_<id>.py` 並附一鍵執行指令寄信，**不自動改動正式排程** |
 
 ---
@@ -33,23 +33,23 @@ flowchart TD
     subgraph Engine["engine/sec_watch.py (情資感知引擎)"]
         F1["Track 1: 黑名單同步器<br/>(refresh_blacklist)"]
         F2["Track 2: 警訊收集與去重器<br/>(fetch_cisa_kev_items + fetch_rss_items)"]
-        GA["守門員 A: 底層語言/伺服器/共用平台標題白名單<br/>(match_foundation_whitelist - 0 AI 呼叫)"]
+        GA["守門員 A: 底層語言/伺服器/共用平台標題白名單<br/>(match_foundation_whitelist - 免呼叫 AI)"]
         GB["守門員 B: 重大風險門檻<br/>(passes_severity_gate: KEV / CVSS>=8.5 / RCE / SQLi)"]
-        ARCH["路徑 1: 母表架構直查 (ARCH_INVENTORY)<br/>(build_arch_inventory_report - 免產出 .py)"]
+        ARCH["路徑 1: 管理主表架構直查 (ARCH_INVENTORY)<br/>(build_arch_inventory_report - 免產出 .py)"]
         AI["路徑 2: 供應鏈/手動通報判讀<br/>(analyze_advisory + build_task_file)"]
     end
 
     subgraph Storage["private/ (Gitignore)"]
         BL["private/gov_blacklist.json<br/>(單字元來源碼精簡索引)"]
         SEEN["private/sec_watch_seen.json<br/>(已處理公告與待通知狀態)"]
-        ARCH_CSV["private/reports/sec_arch_<date>_<tech>.csv<br/>(母表架構候選網站清單)"]
+        ARCH_CSV["private/reports/sec_arch_<date>_<tech>.csv<br/>(管理主表架構候選網站清單)"]
         TASK["private/sec_tasks/task_<id>.py<br/>(宣告式規則任務草稿)"]
         RPT["private/reports/sec_task_<id>.csv<br/>(專案清查結果報表)"]
     end
 
     subgraph Runtime["現有 websitecheck 核心管線"]
-        AL["daily/audit_links.py<br/>(check_external 外連稽核)"]
-        FO["engine/full_overnight.py<br/>(四階段全站深掃)"]
+        AL["daily/audit_links.py<br/>(check_external 外部連結稽核)"]
+        FO["engine/full_overnight.py<br/>(四階段全站深度掃描)"]
         ML["engine/mailer.py<br/>(send_mail 通知管理員)"]
     end
 
@@ -61,11 +61,11 @@ flowchart TD
     S3 --> F2
     F2 <--> SEEN
     F2 -->|"自動巡檢公告"| GA
-    GA -->|"個別民間公司商用系統"| IGN["記錄至 seen 並略過 (0 AI / 0 產檔)"]
+    GA -->|"個別民間公司商用系統"| IGN["記錄至 seen 並略過 (免呼叫 AI / 不產檔)"]
     GA -->|"命中底層架構/共用平台"| GB
     GB -->|"未達重大風險門檻"| IGN
     GB -->|"底層語言/Web Server/CMS/共用平台"| ARCH
-    ARCH -->|"比對母表「系統語言與架構」欄"| ARCH_CSV
+    ARCH -->|"比對管理主表「系統語言與架構」欄"| ARCH_CSV
     ARCH_CSV -->|"2a. 寄送架構候選清單 CSV"| ML
 
     GB -->|"第三方腳本供應鏈污染 (如 polyfill.io)"| AI
@@ -83,7 +83,7 @@ sequenceDiagram
     participant Cron as 排程 / 管理員 CLI
     participant SW as engine/sec_watch.py
     participant Gov as data.gov.tw / CISA KEV / TWCERT
-    participant Sheet as 母表「系統語言與架構」/ CSV
+    participant Sheet as 管理主表「系統語言與架構」/ CSV
     participant Audit as daily/audit_links.py
     participant Mail as engine/mailer.py (管理員信箱)
 
@@ -98,13 +98,13 @@ sequenceDiagram
     end
 
     rect rgb(255, 248, 235)
-        Note over SW,Mail: Track 2：雙層零成本守門員 & 雙軌分流處置（先寄信給管理員）
+        Note over SW,Mail: Track 2：雙層規則守門員 & 雙軌分流處置（先寄信給管理員）
         SW->>Gov: 抓取 CISA KEV JSON 與 TWCERT RSS (或 --from-url / --from-text)
         Gov-->>SW: 回傳未處理過的新公告
         SW->>SW: 守門員 A (標題比對底層語言/伺服器/共用平台白名單) → 剔除個別廠商私用系統
         SW->>SW: 守門員 B (KEV / CVSS >= 8.5 / RCE / SQLi / 認證繞過 / 在野利用)
         alt 路徑 1：ARCH_INVENTORY (PHP / ASP.NET / IIS / Java / Node.js / WordPress / CCMS 等)
-            SW->>Sheet: 直接查詢母表「系統語言與架構」欄 (0 AI 呼叫、免產出 task_*.py)
+            SW->>Sheet: 直接查詢管理主表「系統語言與架構」欄 (無須呼叫 AI、免產出 task_*.py)
             Sheet-->>SW: 匯出 sec_arch_<YYYYMMDD>_<tech>.csv 候選受影響網站清單
         else 路徑 2：TEMP_TASK (外部腳本供應鏈污染如 polyfill.io 或手動交辦)
             SW->>SW: 抽取宣告式規則 TASK_RULES + make_regex_safe + 3 站試跑 + AST 白名單驗證
@@ -156,16 +156,16 @@ sequenceDiagram
 
 ### 3.3 與 `daily/audit_links.py` 及 `engine/full_overnight.py` 的銜接
 1. **啟動同步**：`full_overnight.py` 非 `--verify` 模式啟動時自動呼叫 `sec_watch.refresh_blacklist()`（Track 1）與 `sec_watch.run_advisory_watch()`（Track 2）。若遠端同步失敗且本機快取超過 `BLACKLIST_STALE_DAYS`（3 天）未更新，自動在同步訊息附加告警。
-2. **先於 DNS 之 O(1) 外連攔截（含轉址後複查）**：
-   - 在 `audit_links.check_external()` 中，**先於步驟 1 DNS 解析**呼叫 `sec_watch.match_blacklist(url)`，避免已被 TWNIC RPZ 停止解析的涉詐網域只被當成一般 `DEAD`（DNS 解析失敗）而漏失涉詐定性。
+2. **先於 DNS 之 O(1) 外部連結攔截（含轉址後複查）**：
+   - 在 `audit_links.check_external()` 中，**先於步驟 1 DNS 解析**呼叫 `sec_watch.match_blacklist(url)`，避免已被 TWNIC RPZ 停止解析的涉詐網域只被當成一般 `DEAD`（DNS 解析失敗）而漏失涉詐性質判定。
    - 若初始網址未命中，但在步驟 2 HTTP 請求時發生跨網域轉址（`final_host != host`），會對轉址後的 `r.url` 再跑一次 `match_blacklist()`。
 3. **反詐宣導頁情境辨識（`is_antifraud_context`）與階段 2 保送機制**：
-   - 若命中黑名單的外連，其所有出現頁面標題或錨點文字皆含反詐宣導詞（如「詐騙、反詐、防詐、165、假投資、勿點、宣導」），備註標為 `疑似反詐宣導頁列舉之165涉詐網域,請人工確認是否為宣導範例(...)`，交由階段 2 AI 複查或人工確認。
-   - 一般非宣導頁命中者，備註標為 `命中政府165/資安通報涉詐黑名單(...)`，並在 `full_overnight.py` 階段 2 **直接鎖定 `ai_verdict = "A"`（型態：`政府165通報涉詐網域`）**，免因 RPZ 斷網或 Cloudflare 阻擋而被降級。
+   - 若命中黑名單的外部連結，其所有出現頁面標題或錨點文字皆含反詐宣導詞（如「詐騙、反詐、防詐、165、假投資、勿點、宣導」），備註標為 `疑似反詐宣導頁列舉之165涉詐網域,請人工確認是否為宣導範例(...)`，交由階段 2 AI 複查或人工確認。
+   - 一般非宣導頁命中者，備註標為 `命中政府165/資安通報涉詐黑名單(...)`，並在 `full_overnight.py` 階段 2 **直接鎖定 `ai_verdict = "A"`（型態：`政府165通報涉詐網域`）**，免因 RPZ 斷網或 Cloudflare 阻擋而被排除。
 
 ---
 
-## 4. Track 2 詳細設計：資安警訊巡檢、雙層零成本守門員與雙軌分流處置
+## 4. Track 2 詳細設計：資安警訊巡檢、雙層規則守門員與雙軌分流處置
 
 ### 4.1 巡檢來源、去重與待通知補送
 1. **自動巡檢源（`CISA_KEV_URL` + `DEFAULT_ADVISORY_FEEDS`）**：
@@ -178,16 +178,16 @@ sequenceDiagram
    - 記錄每篇公告狀態：`ok`（未通過守門員或無關外部檢測）、`pending_notify`（已產出架構候選 CSV 或任務草稿但尚未寄信通知）、`notified`（已成功寄信通知管理員）、`error`（失敗自動重試最多 `MAX_ADVISORY_RETRIES = 3` 次）。
    - `--dry-run` 時不寫入 `sec_watch_seen.json`，避免預覽把新公告吃掉；先前處於 `pending_notify` 且未過期的項目會在下次加上 `--mail` 執行時一併補寄。
 
-### 4.2 雙層零成本本機守門員（0 AI 呼叫、0 垃圾任務檔）
+### 4.2 雙層規則本機守門員（免呼叫 AI、不產出無關任務檔）
 1. **守門員 A：底層語言 / Web Server / 通用 CMS / 本府共用平台白名單（`match_foundation_whitelist`）**：
-   - **嚴格只比對公告「標題 / 產品欄位」**（絕不比對內文，防止民間公司 OA/HR 系統在內文寫「以 ASP.NET 開發」而誤觸），並採嚴格整字邊界比對（例如 `Java` 絕不誤撞 `JavaScript`）。
+   - **嚴格只比對公告「標題 / 產品欄位」**（絕不比對內文，防止民間公司 OA/HR 系統在內文寫「以 ASP.NET 開發」而誤觸），並採嚴格整字邊界比對（例如 `Java` 絕不誤判為 `JavaScript`）。
    - 白名單涵蓋：
      - 網站底層語言與執行環境：`PHP`（含 Laravel/Symfony/CodeIgniter/Yii）、`ASP.NET` / `.NET Core` / `.NET Framework`、`Java Web`（Spring/Struts/Tomcat/JBoss/Jetty）、`Node.js` / `Next.js` / `Nuxt.js` / `Express`、`ColdFusion`、`OpenSSL`。
      - 網頁伺服器：`Microsoft IIS`、`Apache HTTP Server`、`Nginx` / `OpenResty`。
      - 通用 CMS 與前端元件：`WordPress`、`Drupal`、`Joomla`、`Moodle`、`XOOPS`、`CKEditor`/`CKFinder`、`jQuery`、`Vue.js`、`React`、`Angular`。
-     - 本府多機關共用平台：`CCMS`、`HyWeb`（凌網 `wSite`）、校園 `NSS`（全誼），以及母表「系統語言與架構」欄中動態統計出現 **$\ge 5$ 站**（`SHARED_PLATFORM_MIN_SITES = 5`）之任何共用平台。
-     - 第三方腳本供應鏈污染與憑證事件：`polyfill`、`供應鏈攻擊`、`植入惡意程式`、`網頁掛馬`、`憑證撤銷`、`停止信任`、`TWCA`。
-   - **效果**：TWCERT TVN 中針對單一民間公司私用系統（如 `亞璿資訊｜BA-Workflow`、`新人類｜OneAPP`、`凱發｜WebITR`）之通報在守門員 A 直接剔除，不花一毛 AI Token、不產出任何 `task_*.py`。
+     - 本府多機關共用平台：`CCMS`、`HyWeb`（凌網 `wSite`）、校園 `NSS`（全誼），以及管理主表「系統語言與架構」欄中動態統計出現 **$\ge 5$ 站**（`SHARED_PLATFORM_MIN_SITES = 5`）之任何共用平台。
+     - 第三方腳本供應鏈污染與憑證事件：`polyfill`、`供應鏈攻擊`、`植入惡意程式`、`憑證撤銷`、`停止信任`、`TWCA`。
+   - **效果**：TWCERT TVN 中針對單一民間公司私用系統（如 `亞璿資訊｜BA-Workflow`、`新人類｜OneAPP`、`凱發｜WebITR`）之通報在守門員 A 直接剔除，無須呼叫 AI、不產出任何 `task_*.py`。
 2. **守門員 B：重大風險門檻（`passes_severity_gate`）**：
    - 必須滿足以下任一條件才放行通知管理員：
      - 列入 **CISA KEV** 已知遭積極利用清單（`is_kev=True`）
@@ -195,11 +195,11 @@ sequenceDiagram
      - 含有重大遠端攻擊指標：`RCE` / `遠端程式碼執行` / `任意程式碼執行` / `命令注入`、`SQL Injection` / `資料隱碼`、`Authentication Bypass` / `認證繞過` / `未授權存取`、`Deserialization` / `反序列化`、`Arbitrary File Upload` / `任意檔案上傳` / `目錄遍歷`、`已遭利用` / `在野攻擊` / `供應鏈攻擊`。
 
 ### 4.3 通過門檻後之雙軌分流處置（`ARCH_INVENTORY` vs `TEMP_TASK`）
-1. **路徑 1：母表架構直查（`ARCH_INVENTORY` — 免產出 `task_*.py`、零 AI 呼叫）**：
-   - 當命中項目屬於底層語言、Web Server、CMS 或本府共用平台時，因為資安設定良好的網站均已隱藏精確小版號（外網重爬 466 站首頁也看不出小版號），系統**直接查詢母表「系統語言與架構」欄與最新合規報告 (`compliance.json`)**，篩選出所有使用該架構之候選網站，匯出 `private/reports/sec_arch_<YYYYMMDD>_<id6>_<tech>.csv` 並隨通知信寄給管理員。
-   - 若母表「系統語言與架構」欄尚未全面回填，管理員可隨時執行 `python -m engine.sec_watch --fill-arch`（16 執行緒併發抓取 466 站首頁，約 30 秒內完成全府架構指紋盤點並以「網址」對鍵寫回 Google Sheet 與本機 CSV）。
+1. **路徑 1：管理主表架構直查（`ARCH_INVENTORY` — 免產出 `task_*.py`、無須呼叫 AI）**：
+   - 當命中項目屬於底層語言、Web Server、CMS 或本府共用平台時，因為資安設定良好的網站均已隱藏精確小版號（外網重爬 466 站首頁也看不出小版號），系統**直接查詢管理主表「系統語言與架構」欄與最新合規報告 (`compliance.json`)**，篩選出所有使用該架構之候選網站，匯出 `private/reports/sec_arch_<YYYYMMDD>_<id6>_<tech>.csv` 並隨通知信寄給管理員。
+   - 若管理主表「系統語言與架構」欄尚未全面回填，管理員可隨時執行 `python -m engine.sec_watch --fill-arch`（16 執行緒併發抓取 466 站首頁，約 30 秒內完成全府架構指紋盤點並以「網址」對鍵寫回 Google Sheet 與本機 CSV）。
 2. **路徑 2：宣告式臨時清查任務（`TEMP_TASK` — 針對外部腳本/供應鏈污染或手動交辦）**：
-   - 僅當命中「第三方腳本供應鏈污染 / 憑證信任事件」或管理員手動執行 `--from-url` / `--from-text` 時，才呼叫 `_ask_ai_json`（先經 `webcheck_ai.mask_pii()` 遮蔽個資；支援以 `config.sec_watch_ai_model` 獨立指定高階推理模型如 `gemini-4-argon`，與日常外連語意判讀之輕量 `ai_model` 如 `gemini-2.5-flash-lite` 分級調度）或 `_heuristic_fallback_analysis`（僅抽取明確第三方網域與 `.js`/`.ashx`/`.axd`/`.do`/`.action` 端點，並對 CVE 編號自動去重），產出 `private/sec_tasks/task_<id>.py`。
+   - 僅當命中「第三方腳本供應鏈污染 / 憑證信任事件」或管理員手動執行 `--from-url` / `--from-text` 時，才呼叫 `_ask_ai_json`（先經 `webcheck_ai.mask_pii()` 遮蔽個資；支援以 `config.sec_watch_ai_model` 獨立指定高階模型如 `gemini-4-argon`，與日常外部連結語意判讀之輕量 `ai_model` 如 `gemini-2.5-flash-lite` 依任務分別使用不同模型）或 `_heuristic_fallback_analysis`（僅抽取明確第三方網域與 `.js`/`.ashx`/`.axd`/`.do`/`.action` 端點，並對 CVE 編號自動去重），產出 `private/sec_tasks/task_<id>.py`。
 
 ### 4.4 宣告式任務外掛標準模板（`private/sec_tasks/task_<id>.py`）
 
@@ -254,7 +254,7 @@ def check_site(site_url: str, html: str, headers: dict) -> list[dict]:
    - 每條規則皆實際對照標準市政網頁樣板（`REALISTIC_BENIGN_HTML` 與 `REALISTIC_BENIGN_HEADERS`），凡會命中空字串或標準市政樣板的過寬規則（如單純搜 `script`、`https`、`taipei`）一律剔除並記錄原因。
 3. **嚴格 AST 白名單與純資料優先執行（`validate_task_source` & `_parse_task_file`）**：
    - 任務檔所有欄位皆以 `repr()` 序列化，檔頭使用 `#` 單行註解（防止三引號脫逸注入）。
-   - AST 白名單僅允許 `import re` 與 `from __future__ import annotations`，封鎖所有 `_` 開頭識別字/屬性，且對 `re.<attr>` 與一般物件屬性採嚴格白名單（封鎖 `re.enum.sys` 等模組鏈穿透）。
+   - AST 白名單僅允許 `import re` 與 `from __future__ import annotations`，封鎖所有 `_` 開頭識別字/屬性，且對 `re.<attr>` 與一般物件屬性採嚴格白名單（封鎖如 `re.enum.sys` 等透過模組屬性存取其他物件的做法）。
    - **執行階段（`--run-task`）**：對含有 `TASK_RULES` 的標準任務檔，直接透過 `ast.literal_eval` 讀取規則並交由 `evaluate_rules()` 純資料引擎執行，**完全不呼叫 `exec`**；僅在管理員手寫自訂 `check_site` 且無 `TASK_RULES` 時，才在通過 AST 白名單後以受限 `__builtins__` 執行。
    - 若任務所有規則皆被剔除（無可執行規則），`--run-task` 會直接中止並提示，避免掃出「全府 0 命中（🟢正常）」的假象。
 
@@ -264,11 +264,11 @@ def check_site(site_url: str, html: str, headers: dict) -> list[dict]:
 
 | 檔案路徑 | 職責說明 |
 |---|---|
-| [`engine/sec_watch.py`](../engine/sec_watch.py) | 情資感知主模組：165 黑名單同步、CISA KEV + TWCERT RSS 巡檢、雙層零成本守門員、母表架構直查 (`ARCH_INVENTORY`)、宣告式規則清洗、`--fill-arch` 全府架構回填、`--run-task` 全府快掃執行器 |
+| [`engine/sec_watch.py`](../engine/sec_watch.py) | 情資感知主模組：165 黑名單同步、CISA KEV + TWCERT RSS 巡檢、雙層規則守門員、管理主表架構直查 (`ARCH_INVENTORY`)、宣告式規則清洗、`--fill-arch` 全府架構回填、`--run-task` 全府快掃執行器 |
 | [`scan_settings.py`](../scan_settings.py) | 提供 `gov_blacklist_extra` 手動補充黑名單參數（可由 Sheet「掃描設定」分頁調整） |
 | [`daily/audit_links.py`](../daily/audit_links.py) | 在 `check_external()` 先於 DNS 呼叫 `match_blacklist()` 與 `is_antifraud_context()`，並於跨網域轉址後二次檢查 |
 | [`engine/full_overnight.py`](../engine/full_overnight.py) | 啟動時呼叫 `sec_watch.refresh_blacklist()`（Track 1）與 `sec_watch.run_advisory_watch()`（Track 2）；階段 2 對命中官方黑名單者保送 `ai_verdict = "A"` |
-| [`monthly/smoke_test.py`](../monthly/smoke_test.py) / [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | 將 `engine.sec_watch` 納入部署冒煙測試與 CI 模組載入關卡 |
+| [`monthly/smoke_test.py`](../monthly/smoke_test.py) / [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | 將 `engine.sec_watch` 納入基本功能測試（smoke test）與 CI 模組載入關卡 |
 
 ---
 
@@ -279,7 +279,7 @@ def check_site(site_url: str, html: str, headers: dict) -> list[dict]:
 python -m engine.sec_watch --mail
 python -m engine.sec_watch --advisories-only --mail
 
-# 2. 預覽模式（不寫入 seen 紀錄、不實寄信，印出守門員過濾、母表架構直查與試跑結果）
+# 2. 預覽模式（不寫入 seen 紀錄、不實寄信，印出守門員過濾、管理主表架構直查與試跑結果）
 python -m engine.sec_watch --dry-run
 
 # 3. 一次快速回填全府 466 站「系統語言與架構」欄（16 執行緒併發首頁檢測，同步更新本機 CSV 與 Google Sheet）
