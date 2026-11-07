@@ -155,7 +155,7 @@ sequenceDiagram
 ```
 
 ### 3.3 與 `daily/audit_links.py` 及 `engine/full_overnight.py` 的銜接
-1. **啟動同步**：`full_overnight.py` 非 `--verify` 模式啟動時自動呼叫 `sec_watch.refresh_blacklist()`。若遠端同步失敗且本機快取超過 `BLACKLIST_STALE_DAYS`（3 天）未更新，自動在同步訊息附加告警。
+1. **啟動同步**：`full_overnight.py` 非 `--verify` 模式啟動時自動呼叫 `sec_watch.refresh_blacklist()`（Track 1）與 `sec_watch.run_advisory_watch()`（Track 2）。若遠端同步失敗且本機快取超過 `BLACKLIST_STALE_DAYS`（3 天）未更新，自動在同步訊息附加告警。
 2. **先於 DNS 之 O(1) 外連攔截（含轉址後複查）**：
    - 在 `audit_links.check_external()` 中，**先於步驟 1 DNS 解析**呼叫 `sec_watch.match_blacklist(url)`，避免已被 TWNIC RPZ 停止解析的涉詐網域只被當成一般 `DEAD`（DNS 解析失敗）而漏失涉詐定性。
    - 若初始網址未命中，但在步驟 2 HTTP 請求時發生跨網域轉址（`final_host != host`），會對轉址後的 `r.url` 再跑一次 `match_blacklist()`。
@@ -267,7 +267,7 @@ def check_site(site_url: str, html: str, headers: dict) -> list[dict]:
 | [`engine/sec_watch.py`](../engine/sec_watch.py) | 情資感知主模組：165 黑名單同步、CISA KEV + TWCERT RSS 巡檢、雙層零成本守門員、母表架構直查 (`ARCH_INVENTORY`)、宣告式規則清洗、`--fill-arch` 全府架構回填、`--run-task` 全府快掃執行器 |
 | [`scan_settings.py`](../scan_settings.py) | 提供 `gov_blacklist_extra` 手動補充黑名單參數（可由 Sheet「掃描設定」分頁調整） |
 | [`daily/audit_links.py`](../daily/audit_links.py) | 在 `check_external()` 先於 DNS 呼叫 `match_blacklist()` 與 `is_antifraud_context()`，並於跨網域轉址後二次檢查 |
-| [`engine/full_overnight.py`](../engine/full_overnight.py) | 啟動時呼叫 `sec_watch.refresh_blacklist()`；階段 2 對命中官方黑名單者保送 `ai_verdict = "A"` |
+| [`engine/full_overnight.py`](../engine/full_overnight.py) | 啟動時呼叫 `sec_watch.refresh_blacklist()`（Track 1）與 `sec_watch.run_advisory_watch()`（Track 2）；階段 2 對命中官方黑名單者保送 `ai_verdict = "A"` |
 | [`monthly/smoke_test.py`](../monthly/smoke_test.py) / [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | 將 `engine.sec_watch` 納入部署冒煙測試與 CI 模組載入關卡 |
 
 ---
@@ -277,6 +277,7 @@ def check_site(site_url: str, html: str, headers: dict) -> list[dict]:
 ```bash
 # 1. 日常自動巡檢（同步 165 黑名單 + 檢查 CISA KEV 與 TWCERT 新公告，有新項目加 --mail 即寄信給管理員）
 python -m engine.sec_watch --mail
+python -m engine.sec_watch --advisories-only --mail
 
 # 2. 預覽模式（不寫入 seen 紀錄、不實寄信，印出守門員過濾、母表架構直查與試跑結果）
 python -m engine.sec_watch --dry-run

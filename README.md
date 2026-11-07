@@ -71,7 +71,7 @@ flowchart TD
   - 不重爬、對既有報告重跑階段 2~4 AI 複查：`python -m engine.full_overnight --verify <報告目錄>`
   - 對既有報告補寄：`python -m engine.mailer <報告目錄> [--dry-run] [--mail-to <測試信箱>]`
 - **資安情資感知與雙軌分流清查（`sec_watch`）**：
-  - 同步 165 反詐黑名單 + 巡檢 CISA KEV 與 TWCERT 新公告（雙層守門員過濾個別廠商系統，底層語言/共用平台漏洞直接查母表架構匯出 CSV）：`python -m engine.sec_watch --mail`（預覽加 `--dry-run`）
+  - 同步 165 反詐黑名單 + 巡檢 CISA KEV 與 TWCERT 新公告（雙層守門員過濾個別廠商系統，底層語言/共用平台漏洞直接查母表架構匯出 CSV）：`python -m engine.sec_watch --mail`（只跑 Track 2 公告巡檢加 `--advisories-only`；預覽加 `--dry-run`）
   - 一次快速回填全府 466 站「系統語言與架構」欄：`python -m engine.sec_watch --fill-arch`
   - 手動餵入交辦公文或網址產出清查任務：`python -m engine.sec_watch --from-url <網址> --mail` 或 `--from-text "<內容>" --mail`
   - 一鍵對全府 466 站執行臨時清查任務：`python -m engine.sec_watch --run-task <任務ID> --mail`（查看任務：`--list-tasks`）

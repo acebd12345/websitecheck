@@ -147,7 +147,7 @@ websitecheck/
 | 檔案 | 層 | 職責 |
 |---|---|---|
 | `__init__.py` | — | 整併說明 docstring |
-| **`fetch_layered.py`** | 地基 | ★ **靜態優先分層抓取**。先靜態抓 → `detect_shell` 判是否為 JS 空殼/frameset/內容過少 → 僅在必要且 `allow_render=True` 時升級 Playwright 渲染。內建 `NEVER_RENDER` (`wifi.taipei`) 與 `FORCE_MANUAL` (`travel.taipei`) 保護名單 |
+| **`fetch_layered.py`** | 地基 | ★ **靜態優先分層抓取與空殼偵測**。先靜態抓 → `detect_shell` 判是否為 JS 空殼/frameset/內容過少 → 僅在必要且 `allow_render=True` 時呼叫 `render_to_html` 升級 Playwright 渲染（`crawl.py`/`scan.py` 直接呼叫 `fetch_layered()`；`audit_links.py` 則依母表「內容抓取方式」在 `ALLOW_RENDER=True` 即 `playwright` 站時匯入 `detect_shell` 與 `render_to_html` 按需渲染）。內建 `NEVER_RENDER` (`wifi.taipei`) 與 `FORCE_MANUAL` (`travel.taipei`) 保護名單 |
 | `dates.py` | 地基 | 從 HTML 抽取「最新更新日期」並正規化 |
 | **`sec_watch.py`** | 地基/上層 | ★★ **政府資安情資感知模組**。Track 1：同步 165 反詐開放資料集與補充黑名單至 `private/gov_blacklist.json`（單字元來源碼低記憶體設計），供 `audit_links` O(1) 比對；Track 2：巡檢 CISA KEV JSON 與 TWCERT RSS，經雙層零成本守門員過濾後分流為 `ARCH_INVENTORY`（母表「系統語言與架構」直查匯出 CSV，免產出 `.py`）與 `TEMP_TASK`（宣告式規則 `TASK_RULES`，含 ReDoS 防護與 AST 白名單），並支援 `--fill-arch` 全府架構快速回填與 `--run-task` 快掃 |
 | **`crawl.py`** | 中層 | 健康向深層 BFS 爬蟲（`crawl_site`），供 `scan.py` 使用 |
@@ -186,7 +186,7 @@ sequenceDiagram
     Cron->>S1: 4. ProcessPoolExecutor 平行掃描當日排程站點
     S1->>S1: 依「內容抓取方式」決定渲染 (約 92% 靜態 HTTP / 8% playwright 站)
     S1->>S1: audit_links (外連存活 + 165 比對 + 敏感詞邊界 + 根路徑探測)
-    S1->>S1: compliance (HTTPS/RWD/無障礙 + 11 類系統架構與資安標頭)
+    S1->>S1: compliance (HTTPS/RWD/無障礙 + 11 類系統架構與資安標頭；合規檢核=是 加跑 deep_check)
     S1->>Sheet: 5. page_budget.write_sheet() 非破壞回寫「頁數」與「系統語言與架構」
 
     Cron->>AI_Lite: 6. 對 SUSPICIOUS 外連抓前 4,000 字 + mask_pii() 送審
@@ -311,6 +311,7 @@ python -m engine.mailer <報告目錄> --mail-to <測試收件人>
 # ── 2. 政府資安情資感知與雙軌分流清查 (sec_watch) ──
 # 同步 165 黑名單 + 巡檢 CISA KEV 與 TWCERT 新公告(加 --mail 有新通報即寄給管理員)
 python -m engine.sec_watch --mail
+python -m engine.sec_watch --advisories-only --mail
 python -m engine.sec_watch --dry-run
 # 一次快速回填全府 466 站「系統語言與架構」欄(16 執行緒併發首頁檢測，同步更新 CSV 與 Google Sheet)
 python -m engine.sec_watch --fill-arch
