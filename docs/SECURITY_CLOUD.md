@@ -33,7 +33,7 @@
 
 ## D. 上雲注入原則（給部署）
 1. **一切機敏走環境變數**：`config.py` 的 `get()` 已支援「同名大寫 env 覆寫」→ 雲端設
-   `AI_BASE_URL / AI_MODEL / AI_API_KEY / MASTER_SHEET_ID / GA_KEY_FILE / GMAIL_APP_PASSWORD` 即可，**不需**上傳 `config.json`。
+   `AI_BASE_URL / AI_MODEL / SEC_WATCH_AI_MODEL / AI_API_KEY / MASTER_SHEET_ID / GA_KEY_FILE / GMAIL_APP_PASSWORD` 即可，**不需**上傳 `config.json`。
 2. **Service Account 最小權限**：僅授「該試算表編輯」+「GA 讀取」，不要給整個專案 Owner。
 3. **金鑰輪替**：Gmail app_password / AI key 定期輪替；Secret Manager 版本化。
 4. **產出私有化**：reports/檢核表 一律寫私有 bucket，設定生命週期自動過期（呼應 `log_keep_days`）。

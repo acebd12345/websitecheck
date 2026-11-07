@@ -49,13 +49,16 @@ pip install -r requirements.txt
 
 > 服務帳戶需有試算表編輯權；詞庫、白名單（`content_whitelist`）、免檢名單（`skip_hosts`）與手動補充黑名單（`gov_blacklist_extra`）統一在試算表「掃描設定」分頁維護。
 
-### AI 供應商（內容判讀與資安通報分析，送審前自動經 `mask_pii` 遮蔽個資）
+### AI 供應商（高低階模型分流，送審前自動經 `mask_pii` 遮蔽個資）
 
-| `ai_provider` | 走法 | `ai_model` 範例 | 需裝套件 |
-|---|---|---|---|
-| `openai` | OpenAI 相容 HTTP（地端 vLLM/Ollama，或 OpenAI/OpenRouter/Groq）| `gpt-4o-mini` | 無 |
-| `anthropic` | 官方 Claude SDK | `claude-opus-4-8` / `claude-haiku-4-5` | `anthropic` |
-| `gemini` | Gemini OpenAI 相容端點 | `gemini-2.5-flash` | 無 |
+- **日常外連語意判讀（`ai_model`）**：高頻、大量外部網頁之 A/B/C 語意分類，建議設定輕量快速模型（如 `gemini-2.5-flash-lite`）以控制成本。
+- **資安情資規則與清查腳本生成（`sec_watch_ai_model`，選填）**：低頻、需高精準度推理與撰寫正規表示式之 `sec_watch` 任務，可獨立指定高階推理模型（如 `gemini-4-argon`；留空則沿用 `ai_model`）。
+
+| `ai_provider` | 走法 | `ai_model`（外連初篩）範例 | `sec_watch_ai_model`（規則生成）範例 | 需裝套件 |
+|---|---|---|---|---|
+| `openai` | OpenAI 相容 HTTP（地端 vLLM/Ollama，或 OpenAI/OpenRouter/Groq）| `gpt-4o-mini` / 地端模型 | `gpt-4o` / 地端高階模型 | 無 |
+| `anthropic` | 官方 Claude SDK | `claude-haiku-4-5` | `claude-opus-4-8` | `anthropic` |
+| `gemini` | Gemini OpenAI 相容端點 | `gemini-2.5-flash-lite` | `gemini-4-argon` | 無 |
 
 ### 寄信（`engine/mailer.py`，深掃後按局處彙整寄送）
 

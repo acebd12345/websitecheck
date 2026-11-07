@@ -170,7 +170,7 @@ websitecheck/
 - **Track 1（結構化黑名單）**：自動同步 `data.gov.tw` 165 反詐騙兩大資料集與 `scan_settings` 的 `gov_blacklist_extra`，排除共用平台整域封鎖、收斂大量涉詐子網域，寫入 `private/gov_blacklist.json`，於外連檢測時自動生效。
 - **Track 2（雙層零成本守門員 & 雙軌分流處置）**：巡檢 CISA KEV 結構化 JSON 與 TWCERT/CC RSS，先以**守門員 A（僅比對標題之底層語言/伺服器/共用平台白名單）**直接剔除個別民間公司私用系統（0 AI 呼叫、0 產檔），再以**守門員 B（KEV / CVSS >= 8.5 / RCE / SQLi / 認證繞過 / 在野利用）**把關重大風險：
   1. **路徑 1（`ARCH_INVENTORY` 母表架構直查）**：針對 PHP、ASP.NET、IIS、Java/HyWeb、Node.js、WordPress、CCMS 等底層架構漏洞，直接查詢母表「系統語言與架構」欄匯出 `sec_arch_<YYYYMMDD>_<tech>.csv` 寄給管理員（不產出 `task_*.py`；可隨時用 `--fill-arch` 快速回填全府 466 站架構欄位）。
-  2. **路徑 2（`TEMP_TASK` 臨時清查腳本草稿）**：僅針對外部腳本供應鏈污染（如 `polyfill.io`）或管理員手動 `--from-url` / `--from-text`，才產出 `private/sec_tasks/task_<id>.py`，管理員確認後執行 `--run-task <id> --mail` 即可完成全府 466 站首頁清查。
+  2. **路徑 2（`TEMP_TASK` 臨時清查腳本草稿）**：僅針對外部腳本供應鏈污染（如 `polyfill.io`）或管理員手動 `--from-url` / `--from-text`，才呼叫高階推理模型（可由 `config.sec_watch_ai_model` 獨立指定如 `gemini-4-argon`，與日常外連初篩之輕量 `ai_model` 如 `gemini-2.5-flash-lite` 分流）產出 `private/sec_tasks/task_<id>.py`，管理員確認後執行 `--run-task <id> --mail` 即可完成全府 466 站首頁清查。
 
 ---
 

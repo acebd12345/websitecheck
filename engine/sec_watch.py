@@ -1463,21 +1463,23 @@ AI_TRIAGE_USER_PROMPT = """請分析以下資安公告，判斷是否能透過�
 
 
 def _ask_ai_json(advisory_text: str) -> dict | None:
-    """使用專屬 JSON System Prompt 呼叫 config 設定之 AI 供應商（支援 openai 相容 / gemini / anthropic）。"""
+    """使用專屬 JSON System Prompt 呼叫 config 設定之 AI 供應商（支援 sec_watch_ai_model 獨立指定高階模型如 gemini-4-argon，未設則沿用 ai_model）。"""
     import webcheck_ai
-    if not webcheck_ai.MODEL or "your_model" in str(webcheck_ai.MODEL).lower():
+    model = (getattr(config, "SEC_WATCH_AI_MODEL", None) or webcheck_ai.MODEL or "").strip()
+    if not model or "your_model" in model.lower():
         return None
     if len(advisory_text) > 15000:
         advisory_text = advisory_text[:15000] + "\n...(截斷)"
     advisory_text = webcheck_ai.mask_pii(advisory_text)
     user_msg = f"{AI_TRIAGE_USER_PROMPT}\n\n=== 資安公告全文 ===\n{advisory_text}"
 
-    provider = webcheck_ai.PROVIDER
+    provider = (getattr(config, "SEC_WATCH_AI_PROVIDER", None) or webcheck_ai.PROVIDER or "openai").lower()
+    api_key = getattr(config, "SEC_WATCH_AI_API_KEY", None) or webcheck_ai.API_KEY
     if provider == "anthropic":
         import anthropic
-        client = anthropic.Anthropic(api_key=webcheck_ai.API_KEY)
+        client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
-            model=webcheck_ai.MODEL,
+            model=model,
             max_tokens=1500,
             temperature=0.0,
             system=AI_JSON_SYSTEM_PROMPT,
@@ -1485,11 +1487,12 @@ def _ask_ai_json(advisory_text: str) -> dict | None:
         )
         raw_ans = "".join(b.text for b in msg.content if b.type == "text")
     else:
-        base = webcheck_ai._effective_base()
+        custom_base = (getattr(config, "SEC_WATCH_AI_BASE_URL", None) or "").rstrip("/")
+        base = custom_base or (webcheck_ai.GEMINI_OPENAI_BASE if provider == "gemini" else webcheck_ai._effective_base())
         if not base or "YOUR-" in base.upper():
             return None
         payload = json.dumps({
-            "model": webcheck_ai.MODEL,
+            "model": model,
             "messages": [
                 {"role": "system", "content": AI_JSON_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -1501,7 +1504,7 @@ def _ask_ai_json(advisory_text: str) -> dict | None:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {webcheck_ai.API_KEY}",
+                "Authorization": f"Bearer {api_key}",
             },
             method="POST",
         )

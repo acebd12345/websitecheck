@@ -199,7 +199,7 @@ sequenceDiagram
    - 當命中項目屬於底層語言、Web Server、CMS 或本府共用平台時，因為資安設定良好的網站均已隱藏精確小版號（外網重爬 466 站首頁也看不出小版號），系統**直接查詢母表「系統語言與架構」欄與最新合規報告 (`compliance.json`)**，篩選出所有使用該架構之候選網站，匯出 `private/reports/sec_arch_<YYYYMMDD>_<id6>_<tech>.csv` 並隨通知信寄給管理員。
    - 若母表「系統語言與架構」欄尚未全面回填，管理員可隨時執行 `python -m engine.sec_watch --fill-arch`（16 執行緒併發抓取 466 站首頁，約 30 秒內完成全府架構指紋盤點並以「網址」對鍵寫回 Google Sheet 與本機 CSV）。
 2. **路徑 2：宣告式臨時清查任務（`TEMP_TASK` — 針對外部腳本/供應鏈污染或手動交辦）**：
-   - 僅當命中「第三方腳本供應鏈污染 / 憑證信任事件」或管理員手動執行 `--from-url` / `--from-text` 時，才呼叫 `_ask_ai_json`（先經 `webcheck_ai.mask_pii()` 遮蔽個資）或 `_heuristic_fallback_analysis`（僅抽取明確第三方網域與 `.js`/`.ashx`/`.axd`/`.do`/`.action` 端點，並對 CVE 編號自動去重），產出 `private/sec_tasks/task_<id>.py`。
+   - 僅當命中「第三方腳本供應鏈污染 / 憑證信任事件」或管理員手動執行 `--from-url` / `--from-text` 時，才呼叫 `_ask_ai_json`（先經 `webcheck_ai.mask_pii()` 遮蔽個資；支援以 `config.sec_watch_ai_model` 獨立指定高階推理模型如 `gemini-4-argon`，與日常外連語意判讀之輕量 `ai_model` 如 `gemini-2.5-flash-lite` 分級調度）或 `_heuristic_fallback_analysis`（僅抽取明確第三方網域與 `.js`/`.ashx`/`.axd`/`.do`/`.action` 端點，並對 CVE 編號自動去重），產出 `private/sec_tasks/task_<id>.py`。
 
 ### 4.4 宣告式任務外掛標準模板（`private/sec_tasks/task_<id>.py`）
 
