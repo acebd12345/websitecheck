@@ -32,10 +32,13 @@ def _abspath(v):
 AI_BASE_URL = get("ai_base_url")
 AI_MODEL = get("ai_model")
 AI_API_KEY = get("ai_api_key", "none")
-# 資安情資規則生成可獨立指定高階推理模型（如 gemini-4-argon），未設則沿用 AI_MODEL
+# 資安情資規則生成可獨立指定高階推理模型（Gemini 供應商預設用 gemini-4-argon，其他供應商未設則沿用 AI_MODEL）
 SEC_WATCH_AI_PROVIDER = get("sec_watch_ai_provider") or get("ai_provider", "openai")
 SEC_WATCH_AI_BASE_URL = get("sec_watch_ai_base_url") if get("sec_watch_ai_base_url") is not None else AI_BASE_URL
-SEC_WATCH_AI_MODEL = get("sec_watch_ai_model") or AI_MODEL
+SEC_WATCH_AI_MODEL = (
+    get("sec_watch_ai_model")
+    or ("gemini-4-argon" if str(SEC_WATCH_AI_PROVIDER).lower() == "gemini" else AI_MODEL)
+)
 SEC_WATCH_AI_API_KEY = get("sec_watch_ai_api_key") or AI_API_KEY
 GA_KEY_FILE = _abspath(get("ga_key_file", "private/ga-service-account.json"))
 MASTER_SHEET_ID = get("master_sheet_id")
