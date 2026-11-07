@@ -195,11 +195,11 @@ def main():
     BAD_KW = _build_bad_kw()   # refresh 後重建(模組載入時建的可能是舊快取)
     print(ss_msg, flush=True)
 
-    # 站清單快照與 165 黑名單:僅在非 --verify 模式啟動時同步;失敗沿用舊快取。
+    # 站清單快照、165 黑名單與資安警訊巡檢(Track 2):僅在非 --verify 模式啟動時同步;失敗沿用舊快取。
     if not args.verify:
         try:
             from engine import sec_watch
-            _, bl_msg = sec_watch.refresh_blacklist()
+            _, bl_msg = sec_watch.refresh_blacklist(update_sheet=True)
             print(bl_msg, flush=True)
         except Exception as e:
             print(f"[警告] 政府165黑名單同步略過({type(e).__name__})", flush=True)
@@ -208,6 +208,17 @@ def main():
             print(f"站清單快照:已從 Sheet 更新({n} 站)", flush=True)
         except Exception as e:
             print(f"[警告] 站清單快照更新失敗({type(e).__name__}),沿用既有快照", flush=True)
+        if not args.only and not args.org and not args.limit and not args.resume:
+            try:
+                from engine import sec_watch
+                sec_watch.run_advisory_watch(
+                    send_mail=args.mail,
+                    mail_to=args.mail_to,
+                    dry_run=args.dry_run,
+                    update_sheet=True,
+                )
+            except Exception as e:
+                print(f"[警告] 資安警訊巡檢(Track 2)略過({type(e).__name__}: {e})", flush=True)
 
     if args.verify:
         outdir = args.verify if os.path.isabs(args.verify) else os.path.join(OUT_DIR, "reports", args.verify)

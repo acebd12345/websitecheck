@@ -2462,6 +2462,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="政府資安情資感知與自動規則演進工具 (sec_watch)")
     ap.add_argument("--sync-blacklist", action="store_true", help="只同步 165 反詐騙與資安通報黑名單")
+    ap.add_argument("--advisories-only", action="store_true", help="只執行 Track 2 資安警訊巡檢（略過 Track 1 黑名單同步）")
     ap.add_argument("--fill-arch", action="store_true", help="快速併發檢測全府 466 站首頁並回填母表「系統語言與架構」欄")
     ap.add_argument("--from-url", default="", help="手動指定一篇資安公告網址，立即判讀並生成臨時任務草稿")
     ap.add_argument("--from-text", default="", help="手動傳入上級交辦公文或資安通報文字，立即生成臨時任務草稿")
@@ -2500,13 +2501,38 @@ def main():
     _, ss_msg = scan_settings.refresh()
     print(f"[設定] {ss_msg}")
 
-    # 1. Track 1：同步結構化黑名單（除非只指定手動 --from-url / --from-text）
-    if args.sync_blacklist or (not args.from_url and not args.from_text):
+    # 1. Track 1：同步結構化黑名單（除非只指定手動 --from-url / --from-text 或 --advisories-only）
+    if not args.advisories_only and (args.sync_blacklist or (not args.from_url and not args.from_text)):
         _, msg = refresh_blacklist(update_sheet=args.sheet)
         print(f"[Track 1] {msg}")
         if args.sync_blacklist:
             return
 
+    _run_track2(args)
+
+
+def run_advisory_watch(
+    send_mail: bool = False,
+    mail_to: str | None = None,
+    dry_run: bool = False,
+    update_sheet: bool = True,
+):
+    """供 full_overnight 等每日排程直接呼叫 Track 2 資安警訊巡檢與管理員通知。"""
+    ns = argparse.Namespace(
+        from_url="",
+        from_text="",
+        title="手動輸入資安專案清查通報",
+        limit=0,
+        force=False,
+        sheet=update_sheet,
+        mail=send_mail,
+        mail_to=mail_to,
+        dry_run=dry_run,
+    )
+    _run_track2(ns)
+
+
+def _run_track2(args):
     # 2. Track 2：蒐集待判讀的資安警訊
     #    --dry-run 時完全不寫入 sec_watch_seen.json，避免預覽把公告「吃掉」導致正式執行時漏報
     persist = not args.dry_run
