@@ -12,7 +12,7 @@
 | 軌道 | 情資類型 | 實作來源 | 任務屬性 | 生效與放行策略 |
 |---|---|---|---|---|
 | **Track 1**<br/>結構化黑名單 | 政府依法停止解析或通報之涉詐、博弈網域與特定子路徑（IoC） | 政府資料開放平臺（`data.gov.tw` 165 遭停止解析涉詐網站 `176455`、假投資博弈網站 `160055`）＋ `scan_settings` 的 `gov_blacklist_extra` | **長期性任務** | **全自動生效**<br/>每次深度掃描前自動拉取更新至 `private/gov_blacklist.json`，由 `audit_links.py` 先於 DNS 解析直接攔截 |
-| **Track 2-Path 1**<br/>管理主表架構直查 (`ARCH_INVENTORY`) | 網站底層語言、Web Server、通用 CMS 或本府共用平台之重大漏洞（如 PHP、ASP.NET、IIS、Java/HyWeb/Spring、Apache、Nginx、Node.js、WordPress、CCMS、NSS） | CISA KEV（已知遭積極利用漏洞 JSON）＋ TWCERT/CC（TVN 漏洞公告與資安新聞 RSS） | **架構盤點通知** | **免產出 `.py` 腳本、無須呼叫 AI**<br/>通過雙層守門員後，直接查詢管理主表「系統語言與架構」欄與最新合規報告，匯出候選受影響網站清單 `private/reports/sec_arch_<id>.csv` 寄給管理員 |
+| **Track 2-Path 1**<br/>管理主表架構直查 (`ARCH_INVENTORY`) | 網站底層語言、Web Server、通用 CMS 核心或本府共用平台之重大漏洞（如 PHP、ASP.NET、IIS、Java/HyWeb/Spring、Apache HTTP、Nginx、Node.js、OpenSSL、WordPress Core、CCMS、NSS） | CISA KEV（已知遭積極利用漏洞 JSON）＋ **NIST NVD API 2.0（原廠 CNA 第一手核心漏洞，CVSS ≥ 8.5，同日同架構自動合併）** ＋ TWCERT/CC（TVN 漏洞公告與資安新聞 RSS） | **架構盤點通知** | **免產出 `.py` 腳本、無須呼叫 AI**<br/>通過雙層守門員後，直接查詢管理主表「系統語言與架構」欄與最新合規報告，匯出候選受影響網站清單 `private/reports/sec_arch_<id>.csv` 寄給管理員（若母表 0 站使用該技術則自動略過免發空信） |
 | **Track 2-Path 2**<br/>突發資安警訊 (`TEMP_TASK` / `LONG_TERM_RULE`) | 第三方 JS 供應鏈污染（如 `polyfill.io`）、憑證信任事件，或管理員手動交辦之專案清查 | TWCERT/CC RSS（命中供應鏈白名單）或手動餵入公文/網址（`--from-url` / `--from-text`） | **臨時性任務 / 長期建議** | **先寄信給管理員**<br/>自動產出含純資料規則（`TASK_RULES`）之獨立任務檔 `private/sec_tasks/task_<id>.py` 並附一鍵執行指令寄信，**不自動改動正式排程** |
 
 ---
@@ -26,13 +26,13 @@ flowchart TD
     subgraph Sources["政府公開資安與反詐情資源"]
         S1["data.gov.tw 165 開放資料<br/>(176455 涉詐網站 + 160055 假投資博弈)"]
         S2["Sheet 掃描設定<br/>(gov_blacklist_extra)"]
-        S3["CISA KEV 結構化 JSON +<br/>TWCERT/CC RSS (TVN + 資安新聞)"]
+        S3["CISA KEV + NIST NVD API 2.0 (原廠CNA) +<br/>TWCERT/CC RSS (TVN + 資安新聞)"]
         S4["手動輸入公文 / 通報網址<br/>(--from-url / --from-text)"]
     end
 
     subgraph Engine["engine/sec_watch.py (情資感知引擎)"]
         F1["Track 1: 黑名單同步器<br/>(refresh_blacklist)"]
-        F2["Track 2: 警訊收集與去重器<br/>(fetch_cisa_kev_items + fetch_rss_items)"]
+        F2["Track 2: 警訊收集與去重器<br/>(fetch_cisa_kev_items + fetch_nvd_foundation_items + fetch_rss_items)"]
         GA["守門員 A: 底層語言/伺服器/共用平台標題白名單<br/>(match_foundation_whitelist - 免呼叫 AI)"]
         GB["守門員 B: 重大風險門檻<br/>(passes_severity_gate: KEV / CVSS>=8.5 / RCE / SQLi)"]
         ARCH["路徑 1: 管理主表架構直查 (ARCH_INVENTORY)<br/>(build_arch_inventory_report - 免產出 .py)"]

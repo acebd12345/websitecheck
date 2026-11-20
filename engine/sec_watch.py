@@ -97,8 +97,11 @@ SOURCE_CODE_LABELS = {
     "e": "掃描設定手動補充",
 }
 
-# ── 政府資安警訊與漏洞通報預設清單（CISA KEV 結構化 JSON + TWCERT/CC RSS）──
+# ── 政府資安警訊與國際官方第一手漏洞通報預設清單（CISA KEV + NIST NVD API 2.0 + TWCERT/CC RSS）──
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_LOOKBACK_DAYS = 7
+NVD_MIN_CVSS = 8.5
 
 DEFAULT_ADVISORY_FEEDS = [
     {
@@ -887,6 +890,279 @@ def fetch_cisa_kev_items(lookback_days: int = 30, limit: int = 25) -> list[dict]
     return items
 
 
+# ── NIST NVD API 2.0：針對原廠 CNA 與核心 CPE 之第一手底層漏洞巡檢 ──
+
+_FOUNDATION_RULE_BY_KEY = {r["key"]: r for r in FOUNDATION_TECH_RULES}
+
+_THIRD_PARTY_PLUGIN_RE = re.compile(
+    r"(?:"
+    r"\b(?:plugin|theme|extension|addon|add-on|module)s?\s+for\s+(?:wordpress|joomla|drupal|moodle|xoops)\b|"
+    r"\b(?:wordpress|joomla|drupal|moodle|xoops)\s+(?:plugin|theme|extension|addon|add-on|module)s?\b|"
+    r"^(?:joomla\s+extension|wordpress\s+plugin|drupal\s+module)\b"
+    r")",
+    re.I,
+)
+
+
+def _match_nvd_core_foundation(source_id: str, cpe_pairs: list[str], desc: str) -> dict | None:
+    """針對 NVD 結構化欄位（原廠 CNA sourceIdentifier + CPE vendor:product + 英文描述），
+    精準識別「核心底層語言 / Web Server / 核心 CMS」漏洞，排除第三方外掛或「以 PHP 開發之商用系統」雜訊。
+    """
+    src = (source_id or "").strip().lower()
+    d = (desc or "").strip()
+    cpes = set(cpe_pairs)
+
+    def _hit(rule_key: str, token: str) -> dict:
+        r = _FOUNDATION_RULE_BY_KEY[rule_key]
+        return {
+            "key": r["key"],
+            "label": r["label"],
+            "route": r["route"],
+            "arch_keywords": r["arch_keywords"],
+            "matched_token": token,
+        }
+
+    # 1. Nginx / OpenResty（F5 官方 CNA `f5sirt@f5.com` 或核心 CPE）
+    if (
+        any(p in cpes for p in ("f5:nginx", "nginx:nginx", "openresty:openresty"))
+        or (src == "f5sirt@f5.com" and re.search(r"\bNGINX(?:\s+Plus|\s+Open\s+Source)?\b", d))
+        or re.search(r"^(?:This\s+issue\s+affects\s+)?(?:NGINX\s+(?:Plus|Open\s+Source)|OpenResty)\b", d, re.I)
+    ):
+        return _hit("Nginx", "NGINX")
+
+    # 2. PHP 核心與主流框架（PHP 官方 CNA `security@php.net` 或核心框架 CPE）
+    if (
+        src == "security@php.net"
+        or "php:php" in cpes
+        or re.search(r"^(?:In\s+PHP\s+versions|PHP\s+\d+\.\d+|PHP-FPM\b)", d)
+    ):
+        return _hit("PHP", "PHP Core")
+    if any(p in cpes for p in ("laravel:laravel", "symfony:symfony", "codeigniter:codeigniter", "yiisoft:yii")) or re.search(
+        r"\b(?:laravel/framework|symfony/symfony|symfony/http-kernel|codeigniter4/framework|yiisoft/yii2)\b", d, re.I
+    ):
+        return _hit("PHP", "PHP Framework")
+
+    # 3. Apache HTTP Server（限定 Apache 官方 CNA + HTTP Server / httpd，排除 Apache Axis/Kafka/Spark）
+    if "apache:http_server" in cpes or (
+        src == "security@apache.org" and re.search(r"\bApache\s+HTTP\s+Server\b", d, re.I)
+    ):
+        return _hit("Apache_HTTP", "Apache HTTP Server")
+
+    # 4. Microsoft IIS 與 ASP.NET / .NET
+    if "microsoft:internet_information_services" in cpes or (
+        src == "secure@microsoft.com" and re.search(r"\b(?:Internet\s+Information\s+Services|Microsoft\s+IIS)\b", d, re.I)
+    ):
+        return _hit("IIS", "Microsoft IIS")
+    if any(p.startswith(("microsoft:asp.net", "microsoft:.net")) for p in cpes) or (
+        src == "secure@microsoft.com" and re.search(r"\b(?:ASP\.NET|\.NET\s+(?:Core|Framework|[6-9]|1\d))\b", d)
+    ):
+        return _hit("ASP.NET", "ASP.NET / .NET")
+
+    # 5. Java Web（Apache Tomcat / Struts、Spring Framework / Boot / Security、Jetty、WildFly）
+    if any(p in cpes for p in ("apache:tomcat", "apache:struts")) or (
+        src == "security@apache.org" and re.search(r"\bApache\s+(?:Tomcat|Struts)\b", d, re.I)
+    ):
+        return _hit("Java_Web", "Apache Tomcat/Struts")
+    if any(p.startswith(("vmware:spring", "pivotal_software:spring")) for p in cpes) or (
+        ("vmware" in src or "spring" in src or "pivotal" in src)
+        and re.search(r"\bSpring\s+(?:Framework|Boot|Security|Cloud|Web)\b", d)
+    ):
+        return _hit("Java_Web", "Spring")
+    if any(p in cpes for p in ("eclipse:jetty", "redhat:wildfly")):
+        return _hit("Java_Web", "Java Web Server")
+
+    # 6. Node.js 核心 / Next.js / Nuxt（排除第三方 CLI 打包舊版 Node 之情況）
+    if (
+        "nodejs:node.js" in cpes
+        or (
+            src == "support@hackerone.com"
+            and re.search(r"\bNode\.js\b", d)
+            and not re.search(r"\bembeds\s+an?\s+outdated\s+Node\.js\b", d, re.I)
+        )
+    ):
+        return _hit("NodeJS", "Node.js")
+    if any(p in cpes for p in ("vercel:next.js", "nuxt:nuxt")) or (
+        src == "security-advisories@github.com"
+        and re.search(r"\b(?:Next\.js\s+is\s+a\s+React\s+framework|Nuxt\s+is\s+an\s+open-source\s+framework)\b", d, re.I)
+    ):
+        return _hit("NodeJS", "Next.js/Nuxt")
+
+    # 7. OpenSSL 核心
+    if src == "openssl-security@openssl.org" or "openssl:openssl" in cpes:
+        return _hit("OpenSSL_TLS", "OpenSSL")
+
+    # 8. 通用開源 CMS 核心（嚴格排除滿滿的第三方外掛 / 佈景主題 / 擴充套件）
+    if not _THIRD_PARTY_PLUGIN_RE.search(d):
+        if "wordpress:wordpress" in cpes or re.search(r"\bWordPress\s+Core\b", d, re.I):
+            return _hit("WordPress", "WordPress Core")
+        if "drupal:drupal" in cpes or ("drupal.org" in src and re.search(r"\bDrupal\s+Core\b", d, re.I)):
+            return _hit("Drupal", "Drupal Core")
+        if "joomla:joomla\\!" in cpes or ("joomla.org" in src and re.search(r"\bJoomla!?\s+(?:CMS|Core)\b", d, re.I)):
+            return _hit("Joomla", "Joomla Core")
+        if "moodle:moodle" in cpes or ("moodle" in src and re.search(r"\bIn\s+Moodle\b|^Moodle\b", d, re.I)):
+            return _hit("Moodle", "Moodle Core")
+
+    return None
+
+
+def fetch_nvd_foundation_items(
+    seen_all: dict | None = None,
+    force: bool = False,
+    lookback_days: int = NVD_LOOKBACK_DAYS,
+    min_cvss: float = NVD_MIN_CVSS,
+) -> tuple[list[dict], int]:
+    """直接查詢美國國家漏洞資料庫 NIST NVD REST API 2.0（國際資安新聞與各國 CERT 的上游第一手來源）。
+    - 只取 CVSS (v4.0 / v3.1 / v3.0) >= min_cvss (8.5) 且命中原廠 CNA / 核心底層架構之重大漏洞。
+    - 同一波發布、同一底層架構（如 Nginx 同日修補多個 CVE）自動合併為單一彙整通報，避免洗版。
+    回傳 (consolidated_items, total_fetched_cves)。
+    """
+    seen_map = seen_all or {}
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    start_utc = now_utc - datetime.timedelta(days=lookback_days)
+
+    api_key = str(config.get("nvd_api_key", "") or "").strip()
+    req_headers = {
+        "User-Agent": UA,
+        "Accept": "application/json",
+    }
+    if api_key:
+        req_headers["apiKey"] = api_key
+
+    raw_vulns: list[dict] = []
+    start_idx = 0
+    while True:
+        q_url = (
+            f"{NVD_API_URL}?"
+            f"pubStartDate={start_utc.strftime('%Y-%m-%dT%H:%M:%S.000')}&"
+            f"pubEndDate={now_utc.strftime('%Y-%m-%dT%H:%M:%S.000')}&"
+            f"resultsPerPage=2000&startIndex={start_idx}"
+        )
+        req = urllib.request.Request(q_url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=30, context=_ssl_verified_context()) as resp:
+            payload = json.loads(_decode_bytes(resp.read(), resp.headers.get("Content-Type", "")))
+        batch = payload.get("vulnerabilities") or []
+        raw_vulns.extend(batch)
+        total_results = int(payload.get("totalResults") or 0)
+        start_idx += len(batch)
+        if not batch or start_idx >= total_results or start_idx >= 8000:
+            break
+        time.sleep(0.8)  # 遵守 NVD 公開 API 速率禮儀
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for entry in raw_vulns:
+        c = entry.get("cve") or {}
+        cve_id = str(c.get("id") or "").strip()
+        if not cve_id or str(c.get("vulnStatus") or "").lower() == "rejected":
+            continue
+
+        cid_hash = hashlib.sha256(f"NVD:{cve_id}".encode("utf-8")).hexdigest()[:12]
+        prev = seen_map.get(cid_hash)
+        if not force and prev and not (
+            prev.get("status") == "error" and prev.get("fail_count", 0) < MAX_ADVISORY_RETRIES
+        ):
+            continue
+
+        metrics = c.get("metrics") or {}
+        max_score = 0.0
+        best_ver = ""
+        for mkey, vlabel in (("cvssMetricV40", "4.0"), ("cvssMetricV31", "3.1"), ("cvssMetricV30", "3.0")):
+            for m in (metrics.get(mkey) or []):
+                sc = (m.get("cvssData") or {}).get("baseScore")
+                if isinstance(sc, (int, float)) and float(sc) > max_score:
+                    max_score = float(sc)
+                    best_ver = vlabel
+        if max_score < min_cvss:
+            continue
+
+        descs = c.get("descriptions") or []
+        en_desc = next(
+            (str(d.get("value") or "") for d in descs if d.get("lang") == "en"),
+            str(descs[0].get("value") or "") if descs else "",
+        ).strip()
+
+        cpe_pairs: list[str] = []
+        for cfg in (c.get("configurations") or []):
+            for node in (cfg.get("nodes") or []):
+                for cm in (node.get("cpeMatch") or []):
+                    if not cm.get("vulnerable", True):
+                        continue
+                    parts = str(cm.get("criteria") or "").lower().split(":")
+                    if len(parts) >= 5:
+                        vp = f"{parts[3]}:{parts[4]}"
+                        if vp not in cpe_pairs:
+                            cpe_pairs.append(vp)
+
+        source_id = str(c.get("sourceIdentifier") or "").strip()
+        tech_match = _match_nvd_core_foundation(source_id, cpe_pairs, en_desc)
+        if not tech_match:
+            continue
+
+        pub_date = str(c.get("published") or "")[:10] or now_utc.strftime("%Y-%m-%d")
+        grouped.setdefault((pub_date, tech_match["key"]), []).append({
+            "cve_id": cve_id,
+            "cid_hash": cid_hash,
+            "pub_date": pub_date,
+            "score": max_score,
+            "cvss_ver": best_ver,
+            "desc": en_desc,
+            "source_id": source_id,
+            "tech_match": tech_match,
+        })
+
+    items: list[dict] = []
+    for (pub_date, tech_key), cve_list in sorted(grouped.items(), reverse=True):
+        cve_list.sort(key=lambda x: (-x["score"], x["cve_id"]))
+        top = cve_list[0]
+        t_match = top["tech_match"]
+        max_sc = top["score"]
+        cids_sorted = sorted(x["cve_id"] for x in cve_list)
+        constituent_hashes = [x["cid_hash"] for x in cve_list]
+
+        if len(cve_list) == 1:
+            item_id = top["cid_hash"]
+            title = (
+                f"{t_match['label']}｜{top['cve_id']} "
+                f"(CVSS {top['cvss_ver']}: {max_sc:.1f})"
+            )
+        else:
+            item_id = hashlib.sha256(f"NVD_GROUP:{','.join(cids_sorted)}".encode("utf-8")).hexdigest()[:12]
+            sample_cves = "、".join(x["cve_id"] for x in cve_list[:3])
+            more = f" 等 {len(cve_list)} 項" if len(cve_list) > 3 else f" 共 {len(cve_list)} 項"
+            title = (
+                f"{t_match['label']}｜原廠發布重大安全漏洞（含 {sample_cves}{more}，"
+                f"最高 CVSS {top['cvss_ver']}: {max_sc:.1f}）"
+            )
+
+        lines = [
+            f"資料來源：美國國家漏洞資料庫 NIST NVD（原廠通報機構 CNA: {top['source_id']}，發布日: {pub_date}）",
+            f"最高風險評分：CVSS {top['cvss_ver']} {max_sc:.1f}",
+            "",
+        ]
+        for x in cve_list:
+            one_line = re.sub(r"\s+", " ", x["desc"]).strip()
+            lines.append(
+                f"- {x['cve_id']} (CVSS {x['cvss_ver']}: {x['score']:.1f}) | "
+                f"https://nvd.nist.gov/vuln/detail/{x['cve_id']}\n  {one_line[:360]}"
+            )
+        summary = "\n".join(lines)
+
+        items.append({
+            "id": item_id,
+            "constituent_ids": constituent_hashes,
+            "source": "NIST NVD 官方漏洞資料庫",
+            "title": title,
+            "url": f"https://nvd.nist.gov/vuln/detail/{top['cve_id']}",
+            "pub_date": pub_date,
+            "vendor_product": t_match["matched_token"],
+            "prematched_tech": t_match,
+            "cvss_max": max_sc,
+            "summary_raw": summary,
+            "full_text": summary,
+        })
+
+    return items, len(raw_vulns)
+
+
 # ── Track 2 雙層零成本守門員（Gatekeeper A + Gatekeeper B）與母表架構直查 ──
 
 _SEVERITY_HIGH_RE = re.compile(
@@ -903,7 +1179,22 @@ _SEVERITY_HIGH_RE = re.compile(
     r")",
     re.I,
 )
-_CVSS_SCORE_RE = re.compile(r"cvss[^0-9]{0,25}(10\.0|[0-9]\.[0-9])", re.I)
+# 跳過選填的 CVSS 版本號（如 `CVSS 4.0：9.2`、`CVSS v3.1 Base Score: 9.8`），避免把 `4.0`/`3.1` 誤抓為分數
+_CVSS_SCORE_RE = re.compile(
+    r"cvss(?:\s*v?[234](?:\.[01])?)?(?:[\s:/A-Za-z_-]*?[^\d\n]{1,25}|\s+)(10\.0|[0-9]\.[0-9])",
+    re.I,
+)
+
+# 排除已被 FOUNDATION_TECH_RULES 精確定義之通用語言/伺服器/系統字詞，避免動態共用平台切出 `Apache` 或版號 `10.0` 造成誤觸
+_GENERIC_STACK_TOKENS = {
+    "php", "asp.net", "asp.net webforms", "asp.net mvc", "mvc", "webforms", "iis", "microsoft-iis",
+    "apache", "nginx", "openresty", "java", "spring", "servlet", "jsp", "tomcat", "struts",
+    "node.js", "nodejs", "next.js", "nuxt.js", "express", "vue", "vue.js", "vue ssr", "vue.js spa",
+    "react", "reactjs", "angular", "angular spa", "jquery", "bootstrap", "html5", "spa", "ssr",
+    "wordpress", "drupal", "joomla", "moodle", "xoops", "coldfusion", "openssl",
+    "ubuntu", "debian", "centos", "redhat", "windows", "linux", "unix",
+    "靜態展示", "隱藏server標頭", "已隱藏伺服器特徵",
+}
 
 
 def _load_latest_compliance_tech() -> dict[str, dict]:
@@ -939,7 +1230,9 @@ def _load_latest_compliance_tech() -> dict[str, dict]:
 
 
 def _get_shared_platforms_from_csv(min_sites: int = SHARED_PLATFORM_MIN_SITES) -> dict[str, int]:
-    """統計母表「系統語言與架構」欄與最新合規報告中，出現達 min_sites 站以上之技術/平台代號。"""
+    """統計母表「系統語言與架構」欄與最新合規報告中，出現達 min_sites 站以上之本府專屬共用平台代號（如 CCMS、HyWeb、NSS）。
+    自動排除通用語言/伺服器字眼（如單字 `Apache`、`Java`）與純數字版號（如 `10.0`），防止 `Apache｜Axis` 類誤觸。
+    """
     counts: dict[str, int] = {}
     comp_tech = _load_latest_compliance_tech()
     sites = _load_sites_from_csv()
@@ -952,8 +1245,18 @@ def _get_shared_platforms_from_csv(min_sites: int = SHARED_PLATFORM_MIN_SITES) -
             continue
         for part in re.split(r"[+/,;|()]+", arch):
             tok = part.strip()
-            if len(tok) >= 3:
-                counts[tok] = counts.get(tok, 0) + 1
+            if len(tok) < 3:
+                continue
+            low = tok.lower()
+            # 排除純數字版號（如 10.0、5.2）、ASP.NET MVC 5.2 等帶版號之通用框架詞、以及通用技術字詞
+            if re.fullmatch(r"[0-9._\s-]+", tok):
+                continue
+            low_no_ver = re.sub(r"\s+[0-9][0-9.]*$", "", low).strip()
+            if low in _GENERIC_STACK_TOKENS or low_no_ver in _GENERIC_STACK_TOKENS:
+                continue
+            if not re.search(r"[A-Za-z\u4e00-\u9fff]", tok):
+                continue
+            counts[tok] = counts.get(tok, 0) + 1
     return {k: v for k, v in counts.items() if v >= min_sites}
 
 
@@ -2572,10 +2875,14 @@ def _run_track2(args):
     else:
         # 2a. 先巡檢 CISA KEV 結構化 JSON（近 30 天新增之已遭積極利用漏洞）
         kev_limit = args.limit if args.limit > 0 else 25
+        kev_cve_set: set[str] = set()
         try:
             kev_items = fetch_cisa_kev_items(lookback_days=30, limit=kev_limit)
             new_kev = []
             for it in kev_items:
+                m_cve = re.search(r"CVE-\d{4}-\d+", it.get("title", ""))
+                if m_cve:
+                    kev_cve_set.add(m_cve.group(0))
                 prev_rec = seen_all.get(it["id"])
                 if args.force or not prev_rec or (
                     prev_rec.get("status") == "error" and prev_rec.get("fail_count", 0) < MAX_ADVISORY_RETRIES
@@ -2586,7 +2893,30 @@ def _run_track2(args):
         except Exception as e:
             print(f"[警告] 巡檢 CISA KEV 失敗: {e}")
 
-        # 2b. 巡檢 TWCERT/CC RSS
+        # 2b. 巡檢 NIST NVD API 2.0（原廠 CNA 第一手重大底層漏洞，解決國內 RSS 延遲 1~2 週問題）
+        try:
+            nvd_items, nvd_total = fetch_nvd_foundation_items(
+                seen_all=seen_all,
+                force=args.force,
+                lookback_days=NVD_LOOKBACK_DAYS,
+                min_cvss=NVD_MIN_CVSS,
+            )
+            # 若同一 CVE 已在上方 CISA KEV 佇列中，不重複排入
+            nvd_filtered = []
+            for it in nvd_items:
+                m_cve = re.findall(r"CVE-\d{4}-\d+", it.get("title", ""))
+                if m_cve and all(c in kev_cve_set for c in m_cve):
+                    continue
+                nvd_filtered.append(it)
+            print(
+                f"[Track 2] 巡檢 NIST NVD 官方漏洞庫(近 {NVD_LOOKBACK_DAYS} 天共 {nvd_total} 筆 CVE): "
+                f"篩出核心底層重大更新 {len(nvd_filtered)} 項"
+            )
+            candidates.extend(nvd_filtered)
+        except Exception as e:
+            print(f"[警告] 巡檢 NIST NVD 失敗: {e}")
+
+        # 2c. 巡檢 TWCERT/CC RSS（補充國內專屬共用平台與供應鏈通報）
         per_feed = args.limit if args.limit > 0 else 5
         for feed in DEFAULT_ADVISORY_FEEDS:
             try:
@@ -2654,7 +2984,9 @@ def _run_track2(args):
         print(f"\n  -> 判讀公告: {item['title']}")
         try:
             is_manual = bool(item.get("is_manual"))
-            tech_match = match_foundation_whitelist(item.get("title", ""), item.get("vendor_product", ""))
+            tech_match = item.get("prematched_tech") or match_foundation_whitelist(
+                item.get("title", ""), item.get("vendor_product", "")
+            )
 
             # 守門員 A：自動巡檢時，必須命中「底層語言 / Web Server / 通用 CMS / 本府共用平台 / 供應鏈」白名單
             if not is_manual and not tech_match:
@@ -2675,9 +3007,12 @@ def _run_track2(args):
                 item.get("url", ""), item.get("summary_raw", ""), allow_insecure_fallback=is_manual
             )
             item["full_text"] = full_text
-            ok_sev, sev_reason = passes_severity_gate(
-                item.get("title", ""), full_text, is_kev=bool(item.get("is_kev"))
-            )
+            if isinstance(item.get("cvss_max"), (int, float)) and float(item["cvss_max"]) >= NVD_MIN_CVSS:
+                ok_sev, sev_reason = True, f"NIST NVD 官方 CVSS 高風險評分 ({float(item['cvss_max']):.1f} >= {NVD_MIN_CVSS})"
+            else:
+                ok_sev, sev_reason = passes_severity_gate(
+                    item.get("title", ""), full_text, is_kev=bool(item.get("is_kev"))
+                )
             if not is_manual and not ok_sev:
                 seen_all[item["id"]] = {
                     "title": item["title"],
@@ -2687,6 +3022,9 @@ def _run_track2(args):
                     "note": sev_reason,
                     "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
+                for cid_h in item.get("constituent_ids") or []:
+                    if cid_h != item["id"]:
+                        seen_all[cid_h] = {"status": "grouped", "parent_id": item["id"], "relevant": False}
                 _persist_seen()
                 print(f"     [略過-守門員B] {sev_reason}")
                 continue
@@ -2695,6 +3033,28 @@ def _run_track2(args):
             if tech_match and tech_match.get("route") == "ARCH_INVENTORY" and not is_manual:
                 arch_item = build_arch_inventory_report(item, tech_match, sev_reason)
                 meta = arch_item["meta"]
+                if meta.get("matched_count", 0) == 0 and meta.get("populated_total", 0) >= 50:
+                    try:
+                        if arch_item.get("path") and os.path.exists(arch_item["path"]):
+                            os.remove(arch_item["path"])
+                    except OSError:
+                        pass
+                    seen_all[item["id"]] = {
+                        "title": item["title"],
+                        "url": item["url"],
+                        "status": "ok",
+                        "relevant": False,
+                        "note": f"母表已盤點 {meta['populated_total']} 站中 0 站使用 {tech_match['label']}，免發空清單通知",
+                        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    for cid_h in item.get("constituent_ids") or []:
+                        if cid_h != item["id"]:
+                            seen_all[cid_h] = {"status": "grouped", "parent_id": item["id"], "relevant": False}
+                    _persist_seen()
+                    print(f"     [略過-本府無使用站點] 命中 {tech_match['label']}，惟母表 0 站使用此技術，免寄空清單")
+                    continue
+
+                now_ts = time.strftime("%Y-%m-%d %H:%M:%S")
                 seen_all[item["id"]] = {
                     "title": item["title"],
                     "url": item["url"],
@@ -2704,8 +3064,17 @@ def _run_track2(args):
                     "task_id": meta["id"],
                     "task_path": arch_item["path"],
                     "meta": meta,
-                    "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "constituent_ids": item.get("constituent_ids") or [],
+                    "checked_at": now_ts,
                 }
+                for cid_h in item.get("constituent_ids") or []:
+                    if cid_h != item["id"]:
+                        seen_all[cid_h] = {
+                            "status": "grouped",
+                            "parent_id": item["id"],
+                            "relevant": True,
+                            "checked_at": now_ts,
+                        }
                 _persist_seen()
                 print(
                     f"     [命中-母表架構直查] {tech_match['label']} | {sev_reason}\n"
